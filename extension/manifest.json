@@ -1,23 +1,25 @@
 {
   "manifest_version": 2,
-  "name": "Borderify",
+  "name": "Native Message Sender",
   "version": "1.0",
 
-  "description": "Adds a red border to all webpages matching mozilla.org.",
+  "description": "Sends a message to a native application.",
 
   "icons": {
     "48": "icons/border-48.png"
   },
 
-  "content_scripts": [
-    {
-      "matches": ["*://*.mozilla.org/*"],
-      "js": ["dist/borderify.js"] 
-    }
-  ],
   "browser_specific_settings": {
     "gecko": {
-      "id": "borderify-ts@example.com"
+      "id": "native_message_sender@example.com"
     }
-  }
+  },
+  "background": {
+    "scripts": ["dist/background.js"]
+  },
+  "browser_action": {
+    "default_icon": "icons/border-48.png",
+    "default_title": "Send Native Message"
+  },
+  "permissions": ["nativeMessaging"]
 } 

@@ -1,0 +1,9 @@
+{
+  "name": "native_logger_app",
+  "description": "Logs messages received from Firefox extension",
+  "path": "C:\\Users\\etgarcia\\Projects\\ai\\test\\NativeFirefoxTest\\run-native-host.bat",
+  "type": "stdio",
+  "allowed_extensions": [
+    "native_message_sender@example.com"
+  ]
+} 
