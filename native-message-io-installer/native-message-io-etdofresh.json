@@ -1,0 +1,9 @@
+{
+  "name": "native-message-io-etdofresh",
+  "description": "Native host for sending messages to Firefox extension",
+  "path": "C:\\Users\\etgarcia\\Projects\\ai\\test\\NativeFirefoxTest\\native-message-io-installer\\run-native-message-io.bat",
+  "type": "stdio",
+  "allowed_extensions": [
+    "native-message-io@etdofresh.com"
+  ]
+} 

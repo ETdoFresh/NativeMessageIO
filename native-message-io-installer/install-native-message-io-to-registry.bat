@@ -9,7 +9,7 @@ REM Determine the directory where this script resides
 set "INSTALLER_DIR=%~dp0"
 
 REM Define the native application name (must match manifest filename)
-set "APP_NAME=etdofresh-native-message-io"
+set "APP_NAME=native-message-io-etdofresh"
 
 REM Construct the full path to the manifest file within this directory
 set "MANIFEST_PATH=%INSTALLER_DIR%%APP_NAME%.json"

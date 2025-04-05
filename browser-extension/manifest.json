@@ -1,6 +1,6 @@
 {
-  "manifest_version": 2,
-  "name": "Native Message IO",
+  "manifest_version": 3,
+  "name": "ETdoFresh Native Message IO",
   "version": "1.0",
 
   "description": "Send and receive messages to and from native applications.",
@@ -11,13 +11,13 @@
 
   "browser_specific_settings": {
     "gecko": {
-      "id": "etdofresh_native_message_io"
+      "id": "native-message-io@etdofresh.com"
     }
   },
   "background": {
     "scripts": ["dist/background.js"]
   },
-  "browser_action": {
+  "action": {
     "default_icon": "icons/native-host-control-128.png",
     "default_title": "Native Message IO",
     "default_popup": "dist/popup/popup.html"
