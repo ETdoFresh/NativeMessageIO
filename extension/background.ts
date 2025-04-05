@@ -34,35 +34,48 @@ function connect() {
         return;
     }
     console.log(`Connecting to native application: ${NATIVE_APP_NAME}`);
-    lastError = null;
+    // Clear previous error state BEFORE attempting connection
+    lastError = null; 
     connectionStatus = "Connecting...";
-    updatePopupStatus();
+    updatePopupStatus(); // Show Connecting status without old error
 
     try {
         nativePort = browser.runtime.connectNative(NATIVE_APP_NAME);
-        connectionStatus = "Connected"; // Assume connected, update on disconnect/error
+        connectionStatus = "Connected"; // Assume connected initially, may change on message/disconnect
 
         nativePort.onMessage.addListener((message: NativeMessage) => {
             console.log(`Received message from native app: ${JSON.stringify(message)}`);
-            // Handle messages from native app if needed (e.g., status updates)
-            if (message.status) {
-                connectionStatus = `Connected (Native Status: ${message.status})`;
+
+            if (message.status === "error") {
+                console.error(`Received error status from native app: ${message.message}`);
+                connectionStatus = "Connection Error"; // Set a specific status
+                lastError = message.message || "Unknown error from native host"; // Store the error message
+                // Optionally disconnect immediately if an error status means the connection is useless
+                // disconnect(); 
+            } else if (message.status === "ready") {
+                 connectionStatus = "Connected (Ready)"; // More specific status
+                 lastError = null;
+            } else if (message.status) {
+                 // Handle other potential status messages
+                 connectionStatus = `Connected (Status: ${message.status})`;
             }
+            // Handle other potential message types without a status field if needed
+
             updatePopupStatus();
         });
 
         nativePort.onDisconnect.addListener((p) => {
             if (p.error) {
                 console.error(`Native port disconnected with error: ${p.error.message}`);
-                lastError = p.error.message;
-                connectionStatus = "Disconnected (Error)";
+                lastError = p.error.message; // Keep existing error or set new one
+                connectionStatus = "Disconnected (Port Error)"; // Slightly different status
             } else {
-                console.log("Native port disconnected normally.");
-                lastError = null;
+                console.log("Native port disconnected normally (or due to process exit).");
+                // DO NOT clear lastError here. Let it persist until next successful connect.
                 connectionStatus = "Disconnected";
             }
             nativePort = null;
-            updatePopupStatus();
+            updatePopupStatus(); // Update UI with potentially persistent error
         });
 
          // Optional: Send an initial message if your native app expects one
