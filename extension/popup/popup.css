@@ -8,4 +8,11 @@ button {
     width: 100%;
     padding: 8px;
     margin-top: 10px;
+}
+
+.popup-icon {
+    display: block; /* Center it */
+    margin: 0 auto 10px auto; /* Center horizontally, add bottom margin */
+    width: 48px; /* Display at a reasonable size */
+    height: 48px;
 } 
