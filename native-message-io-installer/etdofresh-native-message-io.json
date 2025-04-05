@@ -1,0 +1,9 @@
+{
+  "name": "etdofresh-native-message-io",
+  "description": "Logs messages received from Firefox extension",
+  "path": "C:\\Users\\etgarcia\\Projects\\ai\\test\\NativeFirefoxTest\\run-native-message-io.bat",
+  "type": "stdio",
+  "allowed_extensions": [
+    "etdofresh_native_message_io"
+  ]
+} 

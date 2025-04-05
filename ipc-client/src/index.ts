@@ -4,7 +4,7 @@ import * as path from 'path';
 
 // Get the same pipe path used by the server
 const PIPE_DIR = process.platform === 'win32' ? '\\\\.\\pipe\\' : '/tmp';
-const PIPE_NAME = 'native-host-ipc-pipe';
+const PIPE_NAME = 'native-message-io-ipc-pipe';
 const PIPE_PATH = process.platform === 'win32' ? path.join(PIPE_DIR, PIPE_NAME) : path.join(PIPE_DIR, `${PIPE_NAME}.sock`);
 
 // Get message from command line arguments

@@ -1,9 +1,9 @@
 {
   "manifest_version": 2,
-  "name": "Native Message Sender",
+  "name": "Native Message IO",
   "version": "1.0",
 
-  "description": "Sends a message to a native application.",
+  "description": "Send and receive messages to and from native applications.",
 
   "icons": {
     "128": "icons/native-host-control-128.png"
@@ -11,7 +11,7 @@
 
   "browser_specific_settings": {
     "gecko": {
-      "id": "native_message_sender@example.com"
+      "id": "etdofresh_native_message_io"
     }
   },
   "background": {
@@ -19,7 +19,7 @@
   },
   "browser_action": {
     "default_icon": "icons/native-host-control-128.png",
-    "default_title": "Native Host Control",
+    "default_title": "Native Message IO",
     "default_popup": "dist/popup/popup.html"
   },
   "permissions": ["nativeMessaging"]
