@@ -1,5 +1,5 @@
 // Define the name of the native application (must match the native app manifest)
-const NATIVE_APP_NAME = "native_logger_app";
+const NATIVE_APP_NAME = "native_message_io_etdofresh";
 
 let nativePort: browser.runtime.Port | null = null;
 let connectionStatus = "Disconnected";
