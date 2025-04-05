@@ -1,96 +1,122 @@
 import * as fs from 'fs';
-import * as process from 'process';
+// import * as process from 'process'; // REMOVED - Rely on global process
+import * as net from 'net'; // Import net module for IPC
+import * as path from 'path'; // To handle paths consistently
 
-// Helper function to read exactly `length` bytes from stdin
-function readStdin(length: number): Promise<Buffer> {
-    return new Promise((resolve, reject) => {
-        const buffer = Buffer.alloc(length);
-        let bytesRead = 0;
-        const onReadable = () => {
-            let chunk;
-            // Read until the desired length is reached
-            while (null !== (chunk = process.stdin.read(length - bytesRead))) {
-                chunk.copy(buffer, bytesRead);
-                bytesRead += chunk.length;
-                if (bytesRead === length) {
-                    process.stdin.removeListener('readable', onReadable);
-                    resolve(buffer);
-                    return;
-                }
-            }
-        };
-        process.stdin.on('readable', onReadable);
-        process.stdin.on('end', () => {
-            if (bytesRead < length) {
-                reject(new Error('stdin ended before required length was read.'));
-            }
-        });
-        process.stdin.on('error', reject);
-        // Start the flow
-        process.stdin.resume();
-        // Trigger the read if needed (especially for smaller chunks)
-        if (process.stdin.readableLength < length - bytesRead) {
-             process.stdin.read(0);
-        }
-    });
-}
+// Define the path for the IPC pipe/socket
+// Use different paths for different OS, ensuring the directory exists or can be created.
+const PIPE_DIR = process.platform === 'win32' ? '\\\\.\\pipe\\' : '/tmp';
+const PIPE_NAME = 'native-host-ipc-pipe';
+const PIPE_PATH = process.platform === 'win32' ? path.join(PIPE_DIR, PIPE_NAME) : path.join(PIPE_DIR, `${PIPE_NAME}.sock`);
 
-// Helper function to write message to stdout (length prefix + message)
+// Helper function to write message to stdout (length prefix + message) - STILL USED FOR INITIAL HANDSHAKE
 function writeStdout(message: any): Promise<void> {
     return new Promise((resolve, reject) => {
-        const messageString = JSON.stringify(message);
-        const messageBuffer = Buffer.from(messageString, 'utf8');
-        const lengthBuffer = Buffer.alloc(4);
-        lengthBuffer.writeUInt32LE(messageBuffer.length, 0); // Use Little Endian for native byte order (common)
+        try {
+            const messageString = JSON.stringify(message);
+            const messageBuffer = Buffer.from(messageString, 'utf8');
+            const lengthBuffer = Buffer.alloc(4);
+            lengthBuffer.writeUInt32LE(messageBuffer.length, 0); // Use Little Endian
 
-        process.stdout.write(lengthBuffer, (err) => {
-            if (err) return reject(err);
-            process.stdout.write(messageBuffer, (err) => {
+            process.stdout.write(lengthBuffer, (err) => {
                 if (err) return reject(err);
-                resolve();
+                process.stdout.write(messageBuffer, (err) => {
+                    if (err) return reject(err);
+                    resolve();
+                });
             });
-        });
+        } catch(e) {
+             reject(e);
+        }
     });
 }
 
-async function main() {
-    try {
-        // 1. Read the 4-byte length header
-        const lengthBuffer = await readStdin(4);
-        const messageLength = lengthBuffer.readUInt32LE(0); // Assuming Little Endian
+// --- Stdio reading is no longer the primary communication method --- 
+// The old readStdin function can be removed or commented out if not needed for any initial setup.
 
-        // 2. Read the message body
-        const messageBuffer = await readStdin(messageLength);
-        const messageJson = messageBuffer.toString('utf8');
 
-        // 3. Parse the message
-        const receivedMessage = JSON.parse(messageJson);
+// --- IPC Server Logic ---
+const ipcServer = net.createServer((socket) => {
+    console.error(`Native Host (${process.pid}): IPC Client connected.`);
 
-        // 4. Log the message (to stderr to avoid interfering with stdout protocol)
-        console.error(`Native Host (${process.pid}): Received message length: ${messageLength}`);
-        console.error(`Native Host (${process.pid}): Received message content:`, receivedMessage);
+    socket.on('data', (data) => {
+        const receivedString = data.toString('utf8').trim();
+        console.error(`Native Host (${process.pid}): Received via IPC: ${receivedString}`);
+        
+        // Process the received string (e.g., log it, perform an action)
+        // You could potentially send a status update back to the extension here if needed,
+        // using writeStdout if the connection is still expected.
 
-        // 5. Send a response back (required for sendNativeMessage)
-        const responseMessage = { status: "success", received: receivedMessage, pid: process.pid };
-        await writeStdout(responseMessage);
-        console.error(`Native Host (${process.pid}): Sent response.`);
+        // Example: Send confirmation back to IPC client
+        socket.write(`Native host received: ${receivedString}\n`); 
+    });
 
-        // Exit gracefully after processing one message (for sendNativeMessage)
-        // process.exit(0); // Exiting might close stdio prematurely in some cases, let node exit naturally
+    socket.on('end', () => {
+        console.error(`Native Host (${process.pid}): IPC Client disconnected.`);
+    });
 
-    } catch (error) {
-        console.error(`Native Host (${process.pid}) Error:`, error);
-        // Try sending an error response if possible
+    socket.on('error', (err) => {
+        console.error(`Native Host (${process.pid}): IPC Socket Error:`, err);
+    });
+});
+
+ipcServer.on('error', (err) => {
+    console.error(`Native Host (${process.pid}): IPC Server Error:`, err);
+    // Try to send error via stdout if possible
+    writeStdout({ status: "error", message: `IPC server error: ${err.message}`, pid: process.pid })
+        .catch(stdoutErr => console.error("Failed to send IPC server error to stdout:", stdoutErr))
+        .finally(() => process.exit(1)); // Exit if server fails critically
+});
+
+function cleanupPipe() {
+    if (process.platform !== 'win32' && fs.existsSync(PIPE_PATH)) {
         try {
-            await writeStdout({ status: "error", message: error instanceof Error ? error.message : String(error), pid: process.pid });
-        } catch (writeError) {
-            console.error(`Native Host (${process.pid}): Failed to send error response:`, writeError);
+            fs.unlinkSync(PIPE_PATH);
+            console.error(`Native Host (${process.pid}): Cleaned up existing socket file: ${PIPE_PATH}`);
+        } catch (err) {
+            console.error(`Native Host (${process.pid}): Error cleaning up socket file: ${PIPE_PATH}`, err);
         }
-        process.exit(1);
     }
 }
 
-// Ensure stdin is flowing
-process.stdin.resume();
-console.error(`Native Host (${process.pid}): Script started, waiting for message...`);
-main(); 
+async function startServer() {
+    cleanupPipe(); // Remove old socket file if it exists (Linux/macOS)
+
+    ipcServer.listen(PIPE_PATH, () => {
+        console.error(`Native Host (${process.pid}): IPC Server listening on ${PIPE_PATH}`);
+        // Send a confirmation message back to the extension via stdout
+        writeStdout({ status: "ready", pid: process.pid, ipcPath: PIPE_PATH })
+            .then(() => {
+                console.error(`Native Host (${process.pid}): Sent ready signal to stdout.`);
+            })
+            .catch(err => {
+                console.error(`Native Host (${process.pid}): Failed to send ready signal to stdout:`, err);
+                process.exit(1); // Exit if we can't even signal readiness
+            });
+    });
+}
+
+// Graceful shutdown
+process.on('SIGINT', () => {
+    console.error(`Native Host (${process.pid}): Received SIGINT. Shutting down.`);
+    ipcServer.close(() => {
+        console.error(`Native Host (${process.pid}): IPC Server closed.`);
+        cleanupPipe();
+        process.exit(0);
+    });
+});
+process.on('SIGTERM', () => {
+    console.error(`Native Host (${process.pid}): Received SIGTERM. Shutting down.`);
+     ipcServer.close(() => {
+        console.error(`Native Host (${process.pid}): IPC Server closed.`);
+        cleanupPipe();
+        process.exit(0);
+    });
+});
+
+// The old main() function relying on stdin is replaced by starting the server.
+console.error(`Native Host (${process.pid}): Starting IPC server...`);
+startServer();
+
+// Keep the process alive while the server is running
+// No need for process.stdin.resume() anymore unless needed for other reasons. 

@@ -19,7 +19,8 @@
   },
   "browser_action": {
     "default_icon": "icons/border-48.png",
-    "default_title": "Send Native Message"
+    "default_title": "Native Host Control",
+    "default_popup": "dist/popup/popup.html"
   },
   "permissions": ["nativeMessaging"]
 } 
