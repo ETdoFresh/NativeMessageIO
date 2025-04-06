@@ -6,7 +6,7 @@ import { messageEmitter, componentStatus, updateComponentStatus } from './state.
 import { writeNativeMessage } from './native-messaging.js';
 import { HTTP_PORT, SERVER_NAME, SERVER_VERSION } from './config.js';
 import type { ComponentStatus } from './state.js';
-import { handleCommandString } from './commands.js';
+import { handleIncomingCommandString } from './commands.js';
 
 const app = express();
 app.use(cors()); // Enable CORS for all origins
@@ -19,7 +19,7 @@ let httpServerInstance: http.Server | null = null;
 async function executeCommandAndRespond(commandString: string, res: Response) {
     logStdErr(`Executing command via API: "${commandString}"`);
     try {
-        const responseString = await handleCommandString(commandString);
+        const responseString = await handleIncomingCommandString(commandString);
         let httpStatus = 200;
         if (responseString.startsWith('[ERROR]')) {
             httpStatus = 500;

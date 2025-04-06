@@ -4,7 +4,7 @@ import { logStdErr } from './utils/logger.js';
 import { updateComponentStatus } from './state.js';
 import { writeNativeMessage } from './native-messaging.js';
 import { PIPE_PATH } from './config.js';
-import { handleCommandString } from './commands.js';
+import { handleIncomingCommandString } from './commands.js';
 
 let ipcServerInstance: net.Server | null = null;
 
@@ -59,7 +59,7 @@ export function startIpcServer(): Promise<net.Server | null> {
                     } else {
                         const commandString: string = requestJson.message;
                         logStdErr(`Processing IPC command: { "message": "${commandString.substring(0, 100)}..." }`);
-                        responseMessage = await handleCommandString(commandString);
+                        responseMessage = await handleIncomingCommandString(commandString);
                     }
                     // --- End Processing --- 
 

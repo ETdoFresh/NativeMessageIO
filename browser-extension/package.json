@@ -5,17 +5,19 @@
   "main": "index.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "build": "tsc && copyfiles -f src/popup/*.html src/popup/*.css icons/*.png dist/popup && copyfiles -f node_modules/webextension-polyfill/dist/browser-polyfill.js dist/popup"
+    "build": "rimraf ./dist && esbuild src/background.ts --bundle --outfile=dist/background.js --format=esm --target=es2020 && esbuild src/popup/popup.ts --bundle --outfile=dist/popup/popup.js --format=iife --target=es2020 && copyfiles -f src/popup/*.html src/popup/*.css icons/*.png dist/popup && copyfiles -f node_modules/webextension-polyfill/dist/browser-polyfill.js dist/popup"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "type": "commonjs",
+  "type": "module",
   "devDependencies": {
     "@types/chrome": "^0.0.313",
     "@types/firefox-webext-browser": "^120.0.4",
     "@types/webextension-polyfill": "^0.12.3",
     "copyfiles": "^2.4.1",
+    "esbuild": "^0.23.0",
+    "rimraf": "^5.0.7",
     "typescript": "^5.8.3"
   },
   "dependencies": {

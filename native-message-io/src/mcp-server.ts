@@ -7,9 +7,11 @@ import { logStdErr } from './utils/logger.js';
 import { updateComponentStatus } from './state.js';
 import { writeNativeMessage } from './native-messaging.js';
 import { SERVER_NAME, SERVER_VERSION } from './config.js';
-import { handleCommandString } from './commands.js'; // Import command handler
+import { handleIncomingCommandString } from './commands.js';
+import readline from 'readline';
 
 let mcpServerInstance: McpServer | null = null;
+let rl: readline.Interface | null = null;
 
 // --- MCP Tool Input Schemas ---
 
@@ -29,8 +31,8 @@ async function handleMcpPing(args: z.infer<typeof PingInputSchema>): Promise<Cal
         commandString += ` ${args.payload}`;
     }
     logStdErr(`Executing MCP tool 'ping', constructing command string: "${commandString}"`);
-    const resultString = await handleCommandString(commandString);
-    // Return the raw string result from handleCommandString
+    const resultString = await handleIncomingCommandString(commandString);
+    // Return the raw string result from handleIncomingCommandString
     return {
         content: [{ type: "text", text: resultString }],
     };
@@ -39,7 +41,7 @@ async function handleMcpPing(args: z.infer<typeof PingInputSchema>): Promise<Cal
 async function handleMcpGetBrowserLogs(args: z.infer<typeof GetBrowserLogsInputSchema>): Promise<CallToolResult> {
     const commandString = 'getBrowserLogs';
     logStdErr(`Executing MCP tool 'getBrowserLogs', constructing command string: "${commandString}"`);
-    const resultString = await handleCommandString(commandString);
+    const resultString = await handleIncomingCommandString(commandString);
     // Return the raw string result
     return {
         content: [{ type: "text", text: resultString }],
@@ -49,7 +51,7 @@ async function handleMcpGetBrowserLogs(args: z.infer<typeof GetBrowserLogsInputS
 async function handleMcpStatus(args: z.infer<typeof GetStatusInputSchema>): Promise<CallToolResult> {
     const commandString = 'status';
     logStdErr(`Executing MCP tool 'getStatus', constructing command string: "${commandString}"`);
-    const resultString = await handleCommandString(commandString);
+    const resultString = await handleIncomingCommandString(commandString);
     // Return the raw string result
     return {
         content: [{ type: "text", text: resultString }],
@@ -114,6 +116,65 @@ export function setupMcpServer() {
 
 export function getMcpServerInstance(): McpServer | null {
     return mcpServerInstance;
+}
+
+export function startMcpServer() {
+    logStdErr('MCP Server part running on STDIN/STDOUT with specific tools.');
+    updateComponentStatus('mcp', 'OK');
+
+    // Setup readline interface for MCP commands over stdin/stdout
+    // This assumes the native host is launched in a mode where stdin/stdout
+    // are dedicated to MCP interaction, NOT native messaging.
+    rl = readline.createInterface({
+        input: process.stdin,
+        output: process.stdout,
+        terminal: false // Important for non-interactive use
+    });
+
+    rl.on('line', async (line) => {
+        const commandString = line.trim();
+        if (!commandString) return; // Ignore empty lines
+
+        logStdErr(`[MCP Server] Received command line: "${commandString}"`);
+        try {
+             // Use the new handler
+            const result = await handleIncomingCommandString(commandString);
+            logStdErr(`[MCP Server] Command processed. Result: ${result}`);
+            // Output result directly to stdout for MCP client
+            process.stdout.write(result + '\n');
+        } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : String(error);
+            logStdErr(`[MCP Server] Error processing command "${commandString}":`, error);
+            // Output error directly to stdout for MCP client
+            process.stdout.write(`[ERROR] ${errorMessage}\n`);
+        }
+    });
+
+    rl.on('close', () => {
+        logStdErr('[MCP Server] Readline interface closed (stdin ended).');
+        updateComponentStatus('mcp', 'Stopped');
+        // Optionally notify the extension if MCP stops unexpectedly
+        writeNativeMessage({ status: "info", component: "mcp", message: "MCP server stdin closed." }).catch(logStdErr);
+    });
+
+     rl.on('error', (err) => {
+         logStdErr(`[MCP Server] Readline Error:`, err);
+         updateComponentStatus('mcp', `Error: Readline ${err.message}`);
+         writeNativeMessage({ status: "error", component: "mcp", message: `MCP server readline error: ${err.message}` }).catch(logStdErr);
+     });
+
+    // Initial prompt or status message if needed (might interfere with scripting)
+    // process.stdout.write("MCP Server Ready\n");
+}
+
+export function stopMcpServer() {
+    if (rl) {
+        logStdErr('[MCP Server] Closing readline interface...');
+        rl.close();
+        rl = null;
+        updateComponentStatus('mcp', 'Stopped');
+        logStdErr('[MCP Server] Readline interface closed.');
+    }
 }
 
 // MCP server typically doesn't need an explicit stop method for STDIN/STDOUT transport,
