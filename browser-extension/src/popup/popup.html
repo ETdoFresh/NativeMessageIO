@@ -3,22 +3,38 @@
 <head>
     <meta charset="utf-8">
     <link rel="stylesheet" href="popup.css"/>
+    <title>Native Host Status</title>
 </head>
 <body>
-    <div class="container">
-        <div class="header">
-            <img id="iconImage" src="/icons/native-host-control-128.png" alt="Icon">
-            <div id="statusText">Status: Checking...</div>
+    <div class="popup-container">
+        <img id="iconImage" src="/icons/native-host-control-128.png" alt="Icon" class="logo-icon">
+
+        <div id="mainContent" class="main-content">
+            <!-- Connected Banner -->
+            <div id="connectedBanner" class="connected-banner status-hidden status-green">CONNECTED</div>
+
+            <!-- Status text shown when disconnected/connecting -->
+            <div id="statusText" class="status-text status-grey">Status: Checking...</div>
+
+            <!-- Component details shown when connected -->
+            <div id="componentStatusContainer" class="component-status-area status-hidden">
+                <div id="httpStatus" class="component-status status-grey">
+                    <span>API Server</span>
+                </div>
+                 <div id="ipcStatus" class="component-status status-grey">
+                    <span>IPC Server</span>
+                </div>
+                 <div id="mcpStatus" class="component-status status-grey">
+                    <span>MCP Server</span>
+                </div>
+            </div>
+
+            <!-- Toggle Button -->
+            <button id="toggleButton" class="button status-grey">Connect</button>
+
+            <!-- Error Message Area -->
+            <div id="errorMessage" class="error-message"></div>
         </div>
-        <!-- Detailed Status -->
-        <div id="componentStatus" class="component-status-container" style="display: none;">
-            <div class="component-status">HTTP API: <span id="httpStatus" class="status-indicator status-grey">?</span></div>
-            <div class="component-status">IPC: <span id="ipcStatus" class="status-indicator status-grey">?</span></div>
-            <div class="component-status">MCP: <span id="mcpStatus" class="status-indicator status-grey">?</span></div>
-        </div>
-        <!-- End Detailed Status -->
-        <button id="toggleButton">Connect</button>
-        <div id="errorMessage" class="error-message"></div>
     </div>
     <script src="popup.js"></script>
 </body>

@@ -106,19 +106,25 @@ function disconnect() {
           logToBuffer(`[Background:disconnect] Immediate setIcon (default) call FAILED: ${err.message}`); // Use buffered log
         });
 
-      logToBuffer("[Background:disconnect] Immediately nullifying port variable."); // Use buffered log
+      logToBuffer("[Background:disconnect] Immediately nullifying port variable and status."); // Use buffered log
       port = null;
+      nativeHostStatus = { isConnected: false, components: {} }; // Reset status HERE
 
-      // Clear status on disconnect
-      nativeHostStatus = { isConnected: false, components: {} };
+      // *** Notify popup IMMEDIATELY ***
+      logToBuffer("[Background:disconnect] Immediately notifying popup of disconnect.");
+      browser.runtime.sendMessage({ type: "NATIVE_DISCONNECTED", payload: nativeHostStatus }).catch(err => {
+         if (err?.message?.includes("Could not establish connection")) return;
+         logToBuffer(`[Background:disconnect:immediate] Error sending disconnect message: ${err.message}`);
+      });
 
     } catch (e) {
         const errorMsg = e instanceof Error ? e.message : String(e);
         logToBuffer(`[Background:disconnect] Error during port.disconnect(): ${errorMsg}`); // Use buffered log
         port = null;
         nativeHostStatus = { isConnected: false, components: {} }; // Reset status
-        browser.action.setIcon({ path: ICON_DEFAULT }).catch((e: Error) => logToBuffer(`Icon reset error after disconnect error: ${e.message}`)); // Use buffered log
-        // Notify popup of disconnect
+        browser.action.setIcon({ path: ICON_DEFAULT }).catch((e: Error) => logToBuffer(`Icon reset error after disconnect error: ${e.message}`));
+        // Notify popup of disconnect even after error
+        logToBuffer("[Background:disconnect] Immediately notifying popup after error.");
         browser.runtime.sendMessage({ type: "NATIVE_DISCONNECTED", payload: nativeHostStatus }).catch(err => {
            if (err?.message?.includes("Could not establish connection")) return;
            logToBuffer(`[Background:disconnect:error] Error sending disconnect message: ${err.message}`);
@@ -199,7 +205,7 @@ async function connect() {
         }
 
         // Clear status on disconnect
-        nativeHostStatus = { isConnected: false, components: {} };
+        // nativeHostStatus = { isConnected: false, components: {} }; // Moved to disconnect() for immediate update
 
         logToBuffer(`[Background:port.onDisconnect] Calling setIcon with ICON_DEFAULT: ${ICON_DEFAULT}`); // Use buffered log
         browser.action.setIcon({ path: ICON_DEFAULT })
@@ -211,10 +217,19 @@ async function connect() {
           });
 
         logToBuffer("[Background:port.onDisconnect] Notifying popup."); // Use buffered log
-        browser.runtime.sendMessage({ type: "NATIVE_DISCONNECTED", payload: nativeHostStatus }).catch((err: Error) => {
-           if (err?.message?.includes("Could not establish connection")) return;
-           logToBuffer(`[Background:port.onDisconnect] Error sending disconnect message: ${err.message}`); // Use buffered log
-        });
+        // Send message from here ONLY if status wasn't already cleared by disconnect()
+        // This acts as a fallback.
+        if (nativeHostStatus.isConnected) {
+             logToBuffer("[Background:port.onDisconnect] Status was still connected, sending disconnect message as fallback.");
+             nativeHostStatus = { isConnected: false, components: {} }; // Ensure reset before sending
+             browser.runtime.sendMessage({ type: "NATIVE_DISCONNECTED", payload: nativeHostStatus }).catch((err: Error) => {
+                 if (err?.message?.includes("Could not establish connection")) return;
+                 logToBuffer(`[Background:port.onDisconnect:fallback] Error sending disconnect message: ${err.message}`);
+             });
+        } else {
+             logToBuffer("[Background:port.onDisconnect] Status already disconnected, no message sent from listener.");
+        }
+
       } else {
         logToBuffer("[Background:port.onDisconnect] Port reference was already null when listener triggered. No action taken."); // Use buffered log
       }
