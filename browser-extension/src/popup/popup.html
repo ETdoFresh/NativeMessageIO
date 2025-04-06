@@ -56,10 +56,12 @@
         <h3>Settings</h3>
 
         <div class="setting-item">
-            <label for="apiPortSetting">API Server Port:</label>
+            <label for="apiPortInput">API Server Port:</label>
             <input type="number" id="apiPortInput" placeholder="e.g., 3580">
+            <span id="apiPortDisplayLocked" class="setting-value locked-value" style="display: none;"></span>
         </div>
 
+        <!-- IPC is always displayed, not editable -->
         <div class="setting-item">
             <label for="ipcPipeSetting">IPC Pipe Name:</label>
             <span id="ipcPipeSetting" class="setting-value"></span>
@@ -68,6 +70,7 @@
         <div class="setting-item">
             <label for="mcpPortInput">MCP SSE Port:</label>
             <input type="number" id="mcpPortInput" placeholder="e.g., 3581">
+            <span id="mcpPortDisplayLocked" class="setting-value locked-value" style="display: none;"></span>
         </div>
 
         <div class="settings-buttons">

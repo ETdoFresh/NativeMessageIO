@@ -13,8 +13,10 @@ let httpPortDisplay;
 let settingsButton;
 let settingsPanel;
 let apiPortInput;
+let apiPortDisplayLocked;
 let ipcPipeSettingSpan;
 let mcpPortInput;
+let mcpPortDisplayLocked;
 let saveSettingsButton;
 let closeSettingsButton;
 let mainPopupContent;
@@ -22,6 +24,10 @@ let mainPopupContent;
 // Hardcoded IPC Pipe Name (matches native host)
 // const IPC_PIPE_NAME = process.platform === 'win32' ? '\\\\.\\pipe\\native-message-io-ipc-pipe' : '/tmp/native-message-io-ipc-pipe.sock'; // REMOVED: process is not defined in browser
 const IPC_PIPE_DISPLAY_NAME = "native-message-io-ipc-pipe"; // Fixed display name
+
+// Default Ports (used when connected but actual value missing)
+const DEFAULT_API_PORT = 3580;
+// const DEFAULT_MCP_PORT = 3581; // Example if needed
 
 document.addEventListener('DOMContentLoaded', () => {
     console.log("[Popup] DOMContentLoaded event fired.");
@@ -38,17 +44,19 @@ document.addEventListener('DOMContentLoaded', () => {
     settingsButton = document.getElementById('settingsButton');
     settingsPanel = document.getElementById('settingsPanel');
     apiPortInput = document.getElementById('apiPortInput');
+    apiPortDisplayLocked = document.getElementById('apiPortDisplayLocked');
     ipcPipeSettingSpan = document.getElementById('ipcPipeSetting');
     mcpPortInput = document.getElementById('mcpPortInput');
+    mcpPortDisplayLocked = document.getElementById('mcpPortDisplayLocked');
     saveSettingsButton = document.getElementById('saveSettingsButton');
     closeSettingsButton = document.getElementById('closeSettingsButton');
     mainPopupContent = document.querySelector('.popup-container');
 
     console.log(`[Popup] Elements acquired: statusDiv=${!!statusDiv}, toggleButton=${!!toggleButton}, componentStatusContainer=${!!componentStatusContainer}, httpPortDisplay=${!!httpPortDisplay}`);
-    console.log(`[Popup] Settings elements acquired: settingsButton=${!!settingsButton}, settingsPanel=${!!settingsPanel}, apiPortInput=${!!apiPortInput}, ipcPipeSettingSpan=${!!ipcPipeSettingSpan}, mcpPortInput=${!!mcpPortInput}`);
+    console.log(`[Popup] Settings elements acquired: settingsButton=${!!settingsButton}, settingsPanel=${!!settingsPanel}, apiPortInput=${!!apiPortInput}, apiPortDisplayLocked=${!!apiPortDisplayLocked}, ipcPipeSettingSpan=${!!ipcPipeSettingSpan}, mcpPortInput=${!!mcpPortInput}, mcpPortDisplayLocked=${!!mcpPortDisplayLocked}`);
     console.log(`[Popup] Main content element acquired: ${!!mainPopupContent}`);
 
-    if (toggleButton && statusDiv && iconImage && errorMessageDiv && componentStatusContainer && httpStatusDiv && ipcStatusDiv && mcpStatusDiv && connectedBanner && httpPortDisplay && settingsButton && settingsPanel && apiPortInput && ipcPipeSettingSpan && mcpPortInput && saveSettingsButton && closeSettingsButton && mainPopupContent) {
+    if (toggleButton && statusDiv && iconImage && errorMessageDiv && componentStatusContainer && httpStatusDiv && ipcStatusDiv && mcpStatusDiv && connectedBanner && httpPortDisplay && settingsButton && settingsPanel && apiPortInput && apiPortDisplayLocked && ipcPipeSettingSpan && mcpPortInput && mcpPortDisplayLocked && saveSettingsButton && closeSettingsButton && mainPopupContent) {
         updateUI(false, 'Checking...'); // Initial state
         toggleButton.addEventListener('click', handleToggleButtonClick);
         console.log("[Popup] Added toggle button listener.");
@@ -68,7 +76,7 @@ document.addEventListener('DOMContentLoaded', () => {
 /** Updates the UI elements based on connection status and component details */
 function updateUI(isConnected, status, components, httpPort) {
     console.log(`[Popup:updateUI] Called with isConnected=${isConnected}, status=${status}, components=`, components, `, httpPort=${httpPort}`);
-    if (!toggleButton || !statusDiv || !iconImage || !errorMessageDiv || !componentStatusContainer || !httpStatusDiv || !ipcStatusDiv || !mcpStatusDiv || !connectedBanner || !httpPortDisplay || !settingsButton || !settingsPanel || !apiPortInput || !ipcPipeSettingSpan || !mcpPortInput || !saveSettingsButton || !closeSettingsButton || !mainPopupContent) {
+    if (!toggleButton || !statusDiv || !iconImage || !errorMessageDiv || !componentStatusContainer || !httpStatusDiv || !ipcStatusDiv || !mcpStatusDiv || !connectedBanner || !httpPortDisplay || !settingsButton || !settingsPanel || !apiPortInput || !apiPortDisplayLocked || !ipcPipeSettingSpan || !mcpPortInput || !mcpPortDisplayLocked || !saveSettingsButton || !closeSettingsButton || !mainPopupContent) {
         console.error("[Popup:updateUI] Missing UI elements.");
         return;
     }
@@ -240,38 +248,80 @@ console.log("[Popup] Added runtime.onMessage listener.");
 
 function openSettingsPanel() {
     console.log("[Popup] openSettingsPanel: Attempting to open...");
-    if (!settingsPanel || !apiPortInput || !ipcPipeSettingSpan || !mcpPortInput || !mainPopupContent) {
+    if (!settingsPanel || !apiPortInput || !apiPortDisplayLocked || !ipcPipeSettingSpan || !mcpPortInput || !mcpPortDisplayLocked || !mainPopupContent || !connectedBanner || !saveSettingsButton) {
         console.error("[Popup] openSettingsPanel: Missing required elements.");
         return;
     }
     console.log("[Popup] openSettingsPanel: Elements found.");
 
-    // Get the actual current port from the main display (if connected)
-    const currentActualPort = httpPortDisplay.textContent.startsWith(':') ? httpPortDisplay.textContent.substring(1) : null;
+    // Check connection status by looking at the connected banner's visibility
+    const isConnected = connectedBanner.classList.contains('status-visible');
+    console.log(`[Popup] openSettingsPanel: Connection status: ${isConnected}`);
 
-    // Load saved ports from storage
-    browser.storage.local.get(['apiPort', 'mcpSsePort']).then(result => {
-        // Use saved API port, fallback to actual current port (if connected) or placeholder
-        apiPortInput.value = result.apiPort || '';
-        if (!apiPortInput.value && currentActualPort) {
-            apiPortInput.placeholder = `Current: ${currentActualPort}`; // Show actual as placeholder if nothing saved
-        } else {
-             apiPortInput.placeholder = "e.g., 3580"; // Default placeholder
-        }
-
-        // Load MCP Port
-        mcpPortInput.value = result.mcpSsePort || '';
-        console.log(`[Popup] openSettingsPanel: Loaded API Port: ${apiPortInput.value}, MCP Port: ${mcpPortInput.value}`);
-
-    }).catch(err => {
-        console.error("[Popup] openSettingsPanel: Error loading settings from storage:", err);
-        apiPortInput.value = ''; // Default to empty on error
-        apiPortInput.placeholder = currentActualPort ? `Current: ${currentActualPort}` : "e.g., 3580";
-        mcpPortInput.value = ''; // Default to empty on error
-    });
+    // Get the actual current API port from the main display (if connected)
+    const currentActualApiPort = httpPortDisplay.textContent.startsWith(':') ? httpPortDisplay.textContent.substring(1) : null;
 
     // Display static IPC pipe name
     ipcPipeSettingSpan.textContent = IPC_PIPE_DISPLAY_NAME;
+
+    // Load saved ports from storage (we always need these)
+    browser.storage.local.get(['apiPort', 'mcpSsePort']).then(result => {
+        const savedApiPort = result.apiPort || '';
+        const savedMcpPort = result.mcpSsePort || '';
+        console.log(`[Popup] openSettingsPanel: Loaded Saved API Port: ${savedApiPort}, Saved MCP Port: ${savedMcpPort}`);
+
+        if (isConnected) {
+            // --- Connected State --- 
+            // Display actual ports (or defaults), hide inputs, show spans
+            apiPortInput.style.display = 'none';
+            mcpPortInput.style.display = 'none';
+            apiPortDisplayLocked.style.display = 'inline';
+            mcpPortDisplayLocked.style.display = 'inline';
+
+            apiPortDisplayLocked.textContent = currentActualApiPort || DEFAULT_API_PORT;
+            // For MCP, display saved value or 'Not Set' since no actual connected port exists yet
+            mcpPortDisplayLocked.textContent = savedMcpPort || '(Not Set)';
+
+            saveSettingsButton.disabled = true; // Disable save when connected
+            saveSettingsButton.title = "Disconnect to change settings";
+        } else {
+            // --- Disconnected State --- 
+            // Show inputs, hide spans, load saved values into inputs
+            apiPortInput.style.display = 'block';
+            mcpPortInput.style.display = 'block';
+            apiPortDisplayLocked.style.display = 'none';
+            mcpPortDisplayLocked.style.display = 'none';
+
+            // Use saved API port, fallback placeholder logic
+            apiPortInput.value = savedApiPort;
+            if (!apiPortInput.value && currentActualApiPort) {
+                apiPortInput.placeholder = currentActualApiPort; // Show just the number
+            } else {
+                apiPortInput.placeholder = String(DEFAULT_API_PORT); // Show just the default number
+            }
+
+            // Load saved MCP Port
+            mcpPortInput.value = savedMcpPort;
+            mcpPortInput.placeholder = "3581"; // Show just the example number
+
+            saveSettingsButton.disabled = false; // Enable save when disconnected
+            saveSettingsButton.title = "";
+        }
+
+    }).catch(err => {
+        // Error loading storage - default to disconnected view
+        console.error("[Popup] openSettingsPanel: Error loading settings from storage:", err);
+        apiPortInput.style.display = 'block';
+        mcpPortInput.style.display = 'block';
+        apiPortDisplayLocked.style.display = 'none';
+        mcpPortDisplayLocked.style.display = 'none';
+        apiPortInput.value = '';
+        apiPortInput.placeholder = String(DEFAULT_API_PORT); // Show just the default number
+        mcpPortInput.value = '';
+        mcpPortInput.placeholder = "3581"; // Show just the example number
+        saveSettingsButton.disabled = false;
+        saveSettingsButton.title = "";
+    });
 
     // Toggle visibility using body class
     console.log("[Popup] openSettingsPanel: Adding .settings-active to body.");
