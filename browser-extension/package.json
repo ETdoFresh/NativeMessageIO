@@ -5,7 +5,7 @@
   "main": "index.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "build": "tsc && copyfiles -f src/popup/*.html src/popup/*.css icons/*.png dist/popup"
+    "build": "tsc && copyfiles -f src/popup/*.html src/popup/*.css src/popup/*.js icons/*.png dist/popup"
   },
   "keywords": [],
   "author": "",

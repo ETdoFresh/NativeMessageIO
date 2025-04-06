@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as http from 'http';
 import * as net from 'net';
 import path from 'path';
+import * as os from 'os';
 import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import { EventEmitter } from 'events';
@@ -16,11 +17,11 @@ import { zodToJsonSchema } from 'zod-to-json-schema';
 // --- Configuration ---
 const HTTP_PORT = process.env.NATIVE_MESSAGE_IO_PORT || 3580; // Use env var or default
 const SERVER_NAME = "native-message-io-multi";
-const SERVER_VERSION = "1.2.0";
+const SERVER_VERSION = "1.2.1"; // Incremented version
 
 // --- IPC Configuration ---
-const PIPE_DIR = process.platform === 'win32' ? '\\\\.\\pipe\\' : '/tmp';
-const PIPE_NAME = 'native-message-io-ipc-pipe';
+const PIPE_DIR = os.tmpdir();
+const PIPE_NAME = `native-message-io-ipc-pipe-${Date.now()}`;
 const PIPE_PATH = path.join(PIPE_DIR, process.platform === 'win32' ? PIPE_NAME : `${PIPE_NAME}.sock`);
 
 // --- Central Event Emitter ---
@@ -29,8 +30,23 @@ const messageEmitter = new EventEmitter();
 
 // --- Server Instances (declared here for access in shutdown) ---
 let httpServer: http.Server | null = null;
-let ipcServer: net.Server | null = null;
+let ipcServer: net.Server | null = null; // Restore IPC
 let mcpServer: McpServer | null = null;
+
+// --- Component Status Tracking ---
+let componentStatus = {
+    http: "pending",
+    ipc: "pending",
+    mcp: "pending", // Assuming MCP starts OK if native messaging works
+    nativeMessaging: "pending"
+};
+
+// --- Logging Helper ---
+/** Logs messages consistently to stderr to avoid interfering with stdout (native messaging) */
+function logStdErr(message: string, ...optionalParams: any[]): void {
+    const timestamp = new Date().toISOString();
+    console.error(`[${timestamp}][${SERVER_NAME}] ${message}`, ...optionalParams);
+}
 
 // --- Native Messaging (STDIO with Firefox) ---
 
@@ -48,12 +64,12 @@ function writeNativeMessage(message: any): Promise<void> {
                 if (err) return reject(err);
                 process.stdout.write(messageBuffer, (err) => {
                     if (err) return reject(err);
-                    console.error(`[${SERVER_NAME}] Sent Native Message: ${messageString.substring(0, 100)}...`);
+                    logStdErr(`Sent Native Message: ${messageString.substring(0, 100)}...`);
                     resolve();
                 });
             });
         } catch (e) {
-            console.error(`[${SERVER_NAME}] Error preparing/writing Native Message:`, e);
+            logStdErr(`Error preparing/writing Native Message:`, e);
             reject(e);
         }
     });
@@ -84,12 +100,31 @@ function listenForNativeMessages() {
                     const messageString = messageBuffer.toString('utf8');
                     try {
                         const messageJson = JSON.parse(messageString);
-                        console.error(`[${SERVER_NAME}] Received Native Message: ${messageString.substring(0,100)}...`);
-                        // Broadcast the received message
-                        messageEmitter.emit('message', { source: 'native-messaging', data: messageJson });
+                        logStdErr(`Received Native Message: ${messageString.substring(0,100)}...`);
+
+                        // *** Handle log response ***
+                        if (messageJson.status === 'logs' && Array.isArray(messageJson.logs)) {
+                           logStdErr(`Received browser logs (${messageJson.logs.length} entries). Processing...`);
+                           // Print logs to stderr
+                           messageJson.logs.forEach((log: any) => {
+                               // Basic validation of log entry structure
+                               if (log && typeof log.timestamp === 'number' && typeof log.message === 'string') {
+                                   logStdErr(`[Browser Log - ${new Date(log.timestamp).toISOString()}] ${log.message}`);
+                               } else {
+                                   logStdErr(`[Browser Log - Invalid Format]`, log);
+                               }
+                           });
+                           // Optionally, re-emit logs via SSE or other mechanism if needed
+                           // sendSseEvent('browser_logs', { source: 'native-messaging', logs: messageJson.logs });
+                        } else {
+                           // Broadcast other valid messages
+                           messageEmitter.emit('message', { source: 'native-messaging', data: messageJson });
+                        }
+                        // *** End handle log response ***
+
                     } catch (parseError) {
-                        console.error(`[${SERVER_NAME}] Error parsing JSON from Native Messaging:`, parseError, `\nContent: ${messageString}`);
-                        writeNativeMessage({ status: "error", message: "Failed to parse incoming JSON", original: messageString }).catch(console.error);
+                        logStdErr(`Error parsing JSON from Native Messaging:`, parseError, `\nContent: ${messageString}`);
+                        writeNativeMessage({ status: "error", message: "Failed to parse incoming JSON", original: messageString }).catch(logStdErr);
                     }
                 } else {
                     // Not enough data for the current message or no message length read yet
@@ -97,24 +132,23 @@ function listenForNativeMessages() {
                 }
             }
         } catch (error) {
-             console.error(`[${SERVER_NAME}] Error processing stdin data:`, error);
+             logStdErr(`Error processing stdin data:`, error);
              messageQueue = Buffer.alloc(0); // Clear queue on error to prevent loops
              messageLength = null;
-             writeNativeMessage({ status: "error", message: `Error processing input stream: ${error instanceof Error ? error.message : error}` }).catch(console.error);
+             const errorMsg = error instanceof Error ? error.message : String(error);
+             writeNativeMessage({ status: "error", message: `Error processing input stream: ${errorMsg}` }).catch(logStdErr);
         }
     });
 
     process.stdin.on('end', () => {
-        console.error(`[${SERVER_NAME}] Native Messaging STDIN stream ended.`);
-        // Handle cleanup if necessary
+        logStdErr(`Native Messaging STDIN stream ended.`);
     });
 
     process.stdin.on('error', (err) => {
-        console.error(`[${SERVER_NAME}] Native Messaging STDIN error:`, err);
-         writeNativeMessage({ status: "error", message: `STDIN Error: ${err.message}` }).catch(console.error);
-         // Potentially exit or try to recover
+        logStdErr(`Native Messaging STDIN error:`, err);
+         writeNativeMessage({ status: "error", message: `STDIN Error: ${err.message}` }).catch(logStdErr);
     });
-     console.error(`[${SERVER_NAME}] Listening for Native Messages on STDIN...`);
+     logStdErr(`Listening for Native Messages on STDIN...`);
 }
 
 // --- Express API Server with SSE ---
@@ -126,27 +160,24 @@ let sseClients: Response[] = [];
 
 // SSE Endpoint
 app.get('/events', (req: Request, res: Response) => {
-    console.error(`[${SERVER_NAME}] SSE client connected from ${req.ip}`);
+    logStdErr(`SSE client connected from ${req.ip}`);
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
     res.flushHeaders(); // Send headers immediately
 
-    // Send a connection confirmation event
     res.write(`id: ${Date.now()}\nevent: connection\ndata: {"message": "Connected to NativeMessageIO SSE"}\n\n`);
-
     sseClients.push(res);
 
     req.on('close', () => {
-        console.error(`[${SERVER_NAME}] SSE client disconnected from ${req.ip}`);
+        logStdErr(`SSE client disconnected from ${req.ip}`);
         sseClients = sseClients.filter(client => client !== res);
         res.end();
     });
 
-    // Keep connection alive (some proxies might close idle connections)
     const keepAliveInterval = setInterval(() => {
         res.write(': keep-alive\n\n');
-    }, 30000); // Send comment every 30 seconds
+    }, 30000);
 
     res.on('finish', () => {
         clearInterval(keepAliveInterval);
@@ -156,19 +187,15 @@ app.get('/events', (req: Request, res: Response) => {
 // Function to send events to all connected SSE clients
 function sendSseEvent(type: string, data: any) {
     if (sseClients.length === 0) return;
-
     const payload = JSON.stringify(data);
     const message = `id: ${Date.now()}\nevent: ${type}\ndata: ${payload}\n\n`;
-
-    console.error(`[${SERVER_NAME}] Sending SSE event '${type}' to ${sseClients.length} clients.`);
+    logStdErr(`Sending SSE event '${type}' to ${sseClients.length} clients.`);
     sseClients.forEach(client => {
         try {
              client.write(message);
         } catch (error) {
-             console.error(`[${SERVER_NAME}] Error sending SSE to a client:`, error);
-             // Optionally remove the client if sending fails permanently
+             logStdErr(`Error sending SSE to a client:`, error);
         }
-
     });
 }
 
@@ -176,19 +203,29 @@ function sendSseEvent(type: string, data: any) {
 app.post('/message', (req: Request, res: Response): void => {
     const messageData = req.body;
     if (!messageData) {
-        // Send response and return
         res.status(400).json({ error: 'No message body provided' });
         return;
     }
-    console.error(`[${SERVER_NAME}] Received API Message via POST:`, JSON.stringify(messageData).substring(0, 100) + "...");
+    logStdErr(`Received API Message via POST:`, JSON.stringify(messageData).substring(0, 100) + "...");
 
-    // Broadcast the received message
+    // *** Check for log request action ***
+    if (messageData.action === 'getBrowserLogs') {
+        logStdErr(`API request received to get browser logs. Sending 'get-logs' command via Native Messaging.`);
+        writeNativeMessage({ command: "get-logs" })
+            .then(() => {
+                 res.status(202).json({ status: 'log_request_sent' }); // Accepted, processing async
+            })
+            .catch(err => {
+                 logStdErr(`Error sending get-logs command to Native Messaging:`, err);
+                 res.status(500).json({ status: 'error', message: 'Failed to send log request to browser extension.' });
+            });
+        return; // Don't broadcast the request itself
+    }
+    // *** End check for log request action ***
+
+    // Broadcast other messages
     messageEmitter.emit('message', { source: 'api', data: messageData });
-
-    // Send response and return
     res.status(200).json({ status: 'received', message: messageData });
-    // No explicit return needed here if void is the return type, but added one before
-    // Let's rely on the function signature's void type now.
 });
 
 // Basic status endpoint
@@ -204,13 +241,12 @@ app.get('/status', (req: Request, res: Response) => {
             httpPort: HTTP_PORT,
             ipcPath: PIPE_PATH
         }
-        // mcpStatus: mcpServer?.getStatus() || 'not_initialized' // Removed - getStatus() not available
     });
 });
 
 // Error Handling Middleware (Express)
 app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
-    console.error(`[${SERVER_NAME}] Express Error:`, err.stack);
+    logStdErr(`Express Error:`, err.stack);
     res.status(500).json({ error: 'Internal Server Error', message: err.message });
 });
 
@@ -224,14 +260,12 @@ const ProcessMessageInputSchema = z.object({
 
 // Define the MCP tool handler
 async function handleProcessMessage(args: z.infer<typeof ProcessMessageInputSchema>): Promise<CallToolResult> {
-    console.error(`[${SERVER_NAME}] Received MCP message via tool 'process_message':`, JSON.stringify(args.message).substring(0,100)+"...");
+    logStdErr(`Received MCP message via tool 'process_message':`, JSON.stringify(args.message).substring(0,100)+"...");
     if (args.broadcast) {
-        // Broadcast the received message
         messageEmitter.emit('message', { source: 'mcp', data: args.message });
     } else {
-         console.error(`[${SERVER_NAME}] MCP message received but broadcast is disabled.`);
+         logStdErr(`MCP message received but broadcast is disabled.`);
     }
-    // Acknowledge receipt
     return {
         content: [{ type: "text", text: `MCP message received by ${SERVER_NAME}` }],
     };
@@ -240,107 +274,112 @@ async function handleProcessMessage(args: z.infer<typeof ProcessMessageInputSche
 function setupMcpServer() {
     try {
          mcpServer = new McpServer(
-            {
-                name: `${SERVER_NAME}-mcp`, // Distinguish the MCP part
-                version: SERVER_VERSION,
-            }
-            // No specific capabilities needed here as we use server.tool()
+            { name: `${SERVER_NAME}-mcp`, version: SERVER_VERSION }
         );
-
-        // Register the tool
         mcpServer.tool(
             "process_message",
-            "Sends a message to the native-message-io server, optionally broadcasting it to other connected clients (Firefox via Native Messaging, API SSE clients).",
+            "Sends a message to the native-message-io server, optionally broadcasting it.",
             ProcessMessageInputSchema.shape,
             handleProcessMessage
         );
-
-        // Use StdioServerTransport for MCP over the *same* stdio
         const mcpTransport = new StdioServerTransport();
-
-        // Connect the MCP server - this will handle reading/writing MCP protocol messages
-        // It runs *concurrently* with the Native Messaging listener on the same stdio streams
         mcpServer.connect(mcpTransport)
             .then(() => {
-                console.error(`[${SERVER_NAME}] MCP Server part running on STDIN/STDOUT.`);
+                logStdErr(`MCP Server part running on STDIN/STDOUT.`);
             })
             .catch(mcpErr => {
-                 console.error(`[${SERVER_NAME}] FATAL: MCP Server failed to connect:`, mcpErr);
-                 // Decide how to handle this - maybe send error via native message and exit?
-                 writeNativeMessage({ status: "error", message: `MCP Server failed: ${mcpErr.message}`}).catch(console.error);
+                 logStdErr(`FATAL: MCP Server failed to connect:`, mcpErr);
+                 writeNativeMessage({ status: "error", message: `MCP Server failed: ${mcpErr.message}`}).catch(logStdErr);
                  process.exit(1);
             });
-
     } catch (error) {
-         console.error(`[${SERVER_NAME}] FATAL: Failed to initialize MCP Server:`, error);
-         writeNativeMessage({ status: "error", message: `MCP Server init failed: ${error instanceof Error ? error.message : error}`}).catch(console.error);
+         logStdErr(`FATAL: Failed to initialize MCP Server:`, error);
+         const errorMsg = error instanceof Error ? error.message : String(error);
+         writeNativeMessage({ status: "error", message: `MCP Server init failed: ${errorMsg}`}).catch(logStdErr);
          process.exit(1);
     }
 }
 
 // --- IPC Server --- 
+// Restore IPC Server section
 function setupIpcServer(resolveListen: () => void, rejectListen: (err: Error) => void) {
     cleanupPipe(); // Remove old socket file if it exists
 
     const server = net.createServer((socket) => {
-        console.error(`[${SERVER_NAME}] IPC Client connected.`);
+        logStdErr(`IPC Client connected.`);
         socket.on('data', (data) => {
             const receivedString = data.toString('utf8').trim();
-            console.error(`[${SERVER_NAME}] Received via IPC: ${receivedString}`);
+            logStdErr(`Received via IPC: ${receivedString}`);
             try {
                 const messageJson = JSON.parse(receivedString);
-                // Broadcast the received message
+
+                // *** Check for log request action ***
+                if (messageJson.action === 'getBrowserLogs') {
+                    logStdErr(`IPC request received to get browser logs. Sending 'get-logs' command via Native Messaging.`);
+                    writeNativeMessage({ command: "get-logs" })
+                        .then(() => {
+                             socket.write(`IPC log request sent to browser\n`); // Acknowledge request sent
+                        })
+                        .catch(err => {
+                             logStdErr(`Error sending get-logs command via IPC request:`, err);
+                             socket.write(`Error sending log request to browser: ${err.message}\n`);
+                        });
+                    return; // Don't broadcast the request itself
+                }
+                // *** End check for log request action ***
+
+                // Broadcast other valid messages
                 messageEmitter.emit('message', { source: 'ipc', data: messageJson });
                 socket.write(`IPC message received by ${SERVER_NAME}\n`); // Acknowledge client
             } catch (parseError) {
-                console.error(`[${SERVER_NAME}] Error parsing JSON from IPC:`, parseError, `\nContent: ${receivedString}`);
-                socket.write(`Error: Failed to parse incoming JSON: ${parseError instanceof Error ? parseError.message : parseError}\n`);
+                logStdErr(`Error parsing JSON from IPC:`, parseError, `\nContent: ${receivedString}`);
+                const errorMsg = parseError instanceof Error ? parseError.message : String(parseError);
+                socket.write(`Error: Failed to parse incoming JSON: ${errorMsg}\n`);
             }
         });
         socket.on('end', () => {
-            console.error(`[${SERVER_NAME}] IPC Client disconnected.`);
+            logStdErr(`IPC Client disconnected.`);
         });
         socket.on('error', (err) => {
-            console.error(`[${SERVER_NAME}] IPC Socket Error:`, err);
+            logStdErr(`IPC Socket Error:`, err);
         });
     });
 
     server.on('error', (err) => {
-        console.error(`[${SERVER_NAME}] FATAL: IPC Server Error:`, err);
-        writeNativeMessage({ status: "error", message: `IPC server error: ${err.message}` }).catch(console.error);
+        logStdErr(`FATAL: IPC Server Error:`, err);
+        writeNativeMessage({ status: "error", message: `IPC server error: ${err.message}` }).catch(logStdErr);
         rejectListen(err); // Reject the startup promise
-        // process.exit(1); // Let the main startup handle exit
     });
 
     server.listen(PIPE_PATH, () => {
-        console.error(`[${SERVER_NAME}] IPC Server listening on ${PIPE_PATH}`);
+        logStdErr(`IPC Server listening on ${PIPE_PATH}`);
         ipcServer = server; // Assign to outer scope variable
         resolveListen(); // Resolve the startup promise
     });
 }
 
 function cleanupPipe() {
-    // Only unlink socket files on non-Windows platforms
+    // Special handling for Windows named pipes - they don't exist as files in the temp dir.
+    // For Unix sockets (non-Windows), we attempt cleanup.
     if (process.platform !== 'win32' && fs.existsSync(PIPE_PATH)) {
         try {
             fs.unlinkSync(PIPE_PATH);
-            console.error(`[${SERVER_NAME}] Cleaned up existing socket file: ${PIPE_PATH}`);
+            logStdErr(`Cleaned up existing socket file: ${PIPE_PATH}`);
         } catch (err) {
-            console.error(`[${SERVER_NAME}] Error cleaning up socket file ${PIPE_PATH}:`, err);
-            // Decide if this is fatal? Maybe not.
+            logStdErr(`Error cleaning up socket file ${PIPE_PATH}:`, err);
         }
     }
-    // On Windows, named pipes are handled differently and don't usually leave files.
 }
+// End Restore IPC Server section
 
 // --- Message Broadcasting Logic ---
 messageEmitter.on('message', (messagePayload: { source: string, data: any }) => {
-    console.error(`[${SERVER_NAME}] Broadcasting message from ${messagePayload.source}...`);
+    logStdErr(`Broadcasting message from ${messagePayload.source}...`);
 
     // Send to Firefox via Native Messaging (unless it was the source)
     if (messagePayload.source !== 'native-messaging') {
          writeNativeMessage({ type: "broadcast", source: messagePayload.source, data: messagePayload.data })
-            .catch(err => console.error(`[${SERVER_NAME}] Error sending broadcast to Native Messaging:`, err));
+            .catch(err => logStdErr(`Error sending broadcast to Native Messaging:`, err));
     }
 
     // Send to connected SSE clients (unless it came from API - maybe avoid echo?)
@@ -362,10 +401,9 @@ messageEmitter.on('message', (messagePayload: { source: string, data: any }) => 
 
 // --- Server Startup ---
 async function startServer() {
-    console.error(`[${SERVER_NAME}] v${SERVER_VERSION} Starting... (PID: ${process.pid})`);
-
-    // Start listening for Native Messages FIRST, as Firefox connects immediately
-    listenForNativeMessages();
+    logStdErr(`v${SERVER_VERSION} Starting... (PID: ${process.pid})`);
+    componentStatus.nativeMessaging = "listening"; // Assume if this runs, stdin is available
+    listenForNativeMessages(); // Start this first
 
     // Start HTTP and IPC servers concurrently
     let httpReady = false;
@@ -374,125 +412,149 @@ async function startServer() {
     const listenHttpPromise = new Promise<void>((resolve, reject) => {
         const server = http.createServer(app);
         server.listen(HTTP_PORT, () => {
-            console.error(`[${SERVER_NAME}] Express API/SSE server listening on http://localhost:${HTTP_PORT}`);
+            logStdErr(`Express API/SSE server listening on http://localhost:${HTTP_PORT}`);
             httpServer = server; // Assign to outer scope variable
-            httpReady = true; // Set flag (still useful for context)
-            // if (ipcReady) resolve(); // Removed check for other server
-            resolve(); // Resolve immediately when this server is ready
+            componentStatus.http = "OK"; // Mark HTTP as OK
+            httpReady = true;
+            resolve();
         }).on('error', (err: NodeJS.ErrnoException) => {
-            console.error(`[${SERVER_NAME}] FATAL: Express server error:`, err);
-            writeNativeMessage({ status: "error", message: `HTTP server error: ${err.message}` }).catch(console.error);
+            logStdErr(`FATAL: Express server error:`, err);
+            const errMsg = (err && 'code' in err) ? err.code : err.message; // Check for code
+            componentStatus.http = `Error: ${errMsg}`;
+            writeNativeMessage({ status: "error", message: `HTTP server error: ${err.message}` }).catch(logStdErr);
             if (err.code === 'EADDRINUSE') {
-                console.error(`*** Port ${HTTP_PORT} is already in use. Try setting NATIVE_MESSAGE_IO_PORT environment variable. ***`);
-                writeNativeMessage({ status: "error", message: `Port ${HTTP_PORT} in use.` }).catch(console.error);
+                logStdErr(`*** Port ${HTTP_PORT} is already in use. Try setting NATIVE_MESSAGE_IO_PORT environment variable. ***`);
+                writeNativeMessage({ status: "error", message: `Port ${HTTP_PORT} in use.` }).catch(logStdErr);
             }
-            reject(err);
+            reject(err); // Reject this specific promise
         });
     });
 
     const listenIpcPromise = new Promise<void>((resolve, reject) => {
         setupIpcServer(() => {
-            ipcReady = true; // Set flag (still useful for context)
-            // if (httpReady) resolve(); // Removed check for other server
-            resolve(); // Resolve immediately when this server is ready
-        }, reject);
+            componentStatus.ipc = "OK"; // Mark IPC as OK
+            ipcReady = true;
+            resolve();
+        }, (ipcErr) => {
+            const errMsg = (ipcErr && 'code' in ipcErr) ? ipcErr.code : ipcErr.message; // Check for code
+            componentStatus.ipc = `Error: ${errMsg}`;
+            // Do NOT reject the main startup here, just this promise
+            logStdErr("IPC Server failed to start, but continuing startup...");
+            resolve(); // Resolve anyway to allow main startup to proceed
+        });
     });
 
-    // Start MCP Server Part (doesn't need to block readiness signal)
-    setupMcpServer();
-
+    // Start MCP Server Part
     try {
-        // Wait for both HTTP and IPC servers to be ready
-        await Promise.all([listenHttpPromise, listenIpcPromise]);
-
-        console.error(`[${SERVER_NAME}] All required servers (HTTP, IPC) are listening.`);
-
-        // Now send the ready signal via Native Messaging
-        await writeNativeMessage({
-            status: "ready",
-            pid: process.pid,
-            server: SERVER_NAME,
-            version: SERVER_VERSION,
-            apiPort: HTTP_PORT,
-            ipcPath: PIPE_PATH, // Include IPC path
-            message: "Server ready, accepting Native Messaging, API/SSE, IPC, and MCP connections."
-        });
-         console.error(`[${SERVER_NAME}] Sent ready signal via Native Messaging.`);
-
-    } catch (error) {
-        console.error(`[${SERVER_NAME}] FATAL: Server startup failed:`, error);
-        // Ensure we attempt cleanup/exit even if startup fails
-        process.exit(1);
+        setupMcpServer();
+        componentStatus.mcp = "OK"; // If setupMcpServer doesn't throw/exit, assume OK
+    } catch (mcpSetupError) {
+        const errorMsg = mcpSetupError instanceof Error ? mcpSetupError.message : String(mcpSetupError);
+        logStdErr(`FATAL: MCP setup failed during startup: ${errorMsg}`);
+        componentStatus.mcp = `Error: ${errorMsg}`;
+        // Allow startup to continue reporting errors
     }
 
-    console.error(`[${SERVER_NAME}] All components initialized.`);
+    try {
+        // Wait for both HTTP and IPC server attempts to finish
+        await Promise.all([listenHttpPromise.catch(e => e), listenIpcPromise.catch(e => e)]);
+
+        logStdErr(`Server startup sequence finished. Status:`, componentStatus);
+
+        // Send ready signal IF Native Messaging is working
+        // Include component status regardless of individual errors
+        if (componentStatus.nativeMessaging === "listening") {
+            await writeNativeMessage({
+                status: "ready", // Indicate overall readiness check complete
+                pid: process.pid,
+                server: SERVER_NAME,
+                version: SERVER_VERSION,
+                components: componentStatus, // Send detailed status
+                message: "Server ready signal sent. Check component status."
+            });
+            logStdErr(`Sent ready signal via Native Messaging with component status.`);
+        } else {
+             logStdErr(`Native messaging not available, cannot send ready signal.`);
+        }
+
+    } catch (error) {
+        // This catch block might be less likely to be hit now
+        logStdErr(`FATAL: Unhandled error during server startup sequence:`, error);
+        // Update status if possible
+        if (!componentStatus.http.startsWith("Error")) componentStatus.http = "Error: Unknown startup failure";
+        if (!componentStatus.ipc.startsWith("Error")) componentStatus.ipc = "Error: Unknown startup failure";
+        process.exit(1); // Exit if the core startup sequence has a major unhandled issue
+    }
+    logStdErr(`All components initialized or initialization attempted.`);
 }
 
 // --- Graceful Shutdown ---
 function shutdown(signal: string) {
-    console.error(`[${SERVER_NAME}] Received ${signal}. Shutting down...`);
+    logStdErr(`Received ${signal}. Shutting down...`);
     messageEmitter.removeAllListeners();
 
-    // Close SSE connections
     sseClients.forEach(client => client.end());
     sseClients = [];
 
     let httpClosed = false;
     let ipcClosed = false;
+    const forcedExitTimeout = 5000; // 5 seconds
 
     const checkExit = () => {
-        if (httpClosed && ipcClosed) {
-            console.error(`[${SERVER_NAME}] All servers closed. Exiting.`);
-            // MCP StdioTransport doesn't need explicit close, relies on process exit
-             cleanupPipe(); // Clean up socket file on exit
+        if (httpClosed && ipcClosed) { // Check both again
+            logStdErr(`All servers closed. Exiting.`);
+             cleanupPipe(); // Restore IPC Clean up
             process.exit(0);
         }
     };
 
+    const forceExitTimer = setTimeout(() => {
+        logStdErr(`Shutdown timeout (${forcedExitTimeout}ms) reached. Forcing exit.`);
+        cleanupPipe(); // Restore IPC Clean up
+        process.exit(1);
+    }, forcedExitTimeout);
+
     // Close HTTP server
     if (httpServer) {
-        console.error(`[${SERVER_NAME}] Closing HTTP server...`);
+        logStdErr(`Closing HTTP server...`);
         httpServer.close((err) => {
-            if (err) console.error(`[${SERVER_NAME}] Error closing HTTP server:`, err);
-            else console.error(`[${SERVER_NAME}] HTTP server closed.`);
+            if (err) logStdErr(`Error closing HTTP server:`, err);
+            else logStdErr(`HTTP server closed.`);
             httpClosed = true;
             checkExit();
         });
-    } else {
-        httpClosed = true;
-    }
+    } else { httpClosed = true; }
 
-    // Close IPC server
+    // Restore IPC Server closing logic
     if (ipcServer) {
-        console.error(`[${SERVER_NAME}] Closing IPC server...`);
+        logStdErr(`Closing IPC server...`);
         ipcServer.close((err) => {
-            if (err) console.error(`[${SERVER_NAME}] Error closing IPC server:`, err);
-            else console.error(`[${SERVER_NAME}] IPC server closed.`);
+            if (err) logStdErr(`Error closing IPC server:`, err);
+            else logStdErr(`IPC server closed.`);
             ipcClosed = true;
             checkExit();
         });
     } else {
-        ipcClosed = true;
+        ipcClosed = true; // If it never started or failed, consider it 'closed'
     }
 
-    // If servers aren't closing quickly, force exit after a timeout
-    setTimeout(() => {
-        console.error(`[${SERVER_NAME}] Shutdown timeout reached. Forcing exit.`);
-        cleanupPipe();
-        process.exit(1);
-    }, 5000); // 5 second timeout
+    // If both were already null/closed, check exit immediately
+    if(httpClosed && ipcClosed) {
+        clearTimeout(forceExitTimer);
+        checkExit();
+    }
 }
 
 process.on('SIGINT', () => shutdown('SIGINT'));
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 process.on('exit', (code) => {
-    console.error(`[${SERVER_NAME}] Exiting with code ${code}`);
+    logStdErr(`Exiting with code ${code}`);
     // Ensure pipe is cleaned up on any exit, though shutdown should handle it
     // cleanupPipe(); // Called within shutdown now
 });
 
 // Start the server!
 startServer().catch(error => {
-     console.error(`[${SERVER_NAME}] Fatal error during top-level startup:`, error);
+     logStdErr(`Fatal error during top-level startup:`, error);
      process.exit(1);
 }); 

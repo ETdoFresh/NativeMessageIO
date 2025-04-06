@@ -5,9 +5,21 @@
     <link rel="stylesheet" href="popup.css"/>
 </head>
 <body>
-    <img id="popup-icon-img" src="native-host-control-128.png" alt="Icon" class="popup-icon"/>
-    <div id="status">Status: Unknown</div>
-    <button id="toggle-button">Connect</button>
+    <div class="container">
+        <div class="header">
+            <img id="iconImage" src="/icons/native-host-control-128.png" alt="Icon">
+            <div id="statusText">Status: Checking...</div>
+        </div>
+        <!-- Detailed Status -->
+        <div id="componentStatus" class="component-status-container" style="display: none;">
+            <div class="component-status">HTTP API: <span id="httpStatus" class="status-indicator status-grey">?</span></div>
+            <div class="component-status">IPC: <span id="ipcStatus" class="status-indicator status-grey">?</span></div>
+            <div class="component-status">MCP: <span id="mcpStatus" class="status-indicator status-grey">?</span></div>
+        </div>
+        <!-- End Detailed Status -->
+        <button id="toggleButton">Connect</button>
+        <div id="errorMessage" class="error-message"></div>
+    </div>
     <script src="popup.js"></script>
 </body>
 </html> 
