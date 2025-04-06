@@ -8,18 +8,25 @@ const PIPE_NAME = 'native-message-io-ipc-pipe';
 const PIPE_PATH = process.platform === 'win32' ? path.join(PIPE_DIR, PIPE_NAME) : path.join(PIPE_DIR, `${PIPE_NAME}.sock`);
 
 // Get message from command line arguments
-const messageToSend = process.argv[2];
+const rawMessage = process.argv[2];
 
-if (!messageToSend) {
+if (!rawMessage) {
     console.error("Usage: node dist/index.js <message_to_send>");
     process.exit(1);
 }
 
+// Construct the JSON payload
+const messagePayload = {
+    message: rawMessage
+};
+const messageJsonString = JSON.stringify(messagePayload);
+
 console.log(`Attempting to connect to IPC server at: ${PIPE_PATH}`);
 const client: net.Socket = net.createConnection({ path: PIPE_PATH }, () => {
     console.log('Connected to IPC server.');
-    console.log(`Sending message: "${messageToSend}"`);
-    client.write(messageToSend);
+    console.log(`Sending JSON: ${messageJsonString}`);
+    // Send the JSON string
+    client.write(messageJsonString);
 });
 
 client.on('data', (data: Buffer) => {

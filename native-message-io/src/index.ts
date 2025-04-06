@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import * as http from 'http';
+import * as net from 'net';
 import path from 'path';
 import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
@@ -15,11 +16,21 @@ import { zodToJsonSchema } from 'zod-to-json-schema';
 // --- Configuration ---
 const HTTP_PORT = process.env.NATIVE_MESSAGE_IO_PORT || 3580; // Use env var or default
 const SERVER_NAME = "native-message-io-multi";
-const SERVER_VERSION = "1.1.0";
+const SERVER_VERSION = "1.2.0";
+
+// --- IPC Configuration ---
+const PIPE_DIR = process.platform === 'win32' ? '\\\\.\\pipe\\' : '/tmp';
+const PIPE_NAME = 'native-message-io-ipc-pipe';
+const PIPE_PATH = path.join(PIPE_DIR, process.platform === 'win32' ? PIPE_NAME : `${PIPE_NAME}.sock`);
 
 // --- Central Event Emitter ---
 // Used to broadcast messages received from any source
 const messageEmitter = new EventEmitter();
+
+// --- Server Instances (declared here for access in shutdown) ---
+let httpServer: http.Server | null = null;
+let ipcServer: net.Server | null = null;
+let mcpServer: McpServer | null = null;
 
 // --- Native Messaging (STDIO with Firefox) ---
 
@@ -189,6 +200,10 @@ app.get('/status', (req: Request, res: Response) => {
         pid: process.pid,
         sseClients: sseClients.length,
         uptime: process.uptime(),
+        listeningOn: {
+            httpPort: HTTP_PORT,
+            ipcPath: PIPE_PATH
+        }
         // mcpStatus: mcpServer?.getStatus() || 'not_initialized' // Removed - getStatus() not available
     });
 });
@@ -200,7 +215,6 @@ app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
 });
 
 // --- MCP Server (STDIO) ---
-let mcpServer: McpServer | null = null;
 
 // Define MCP tool input schema
 const ProcessMessageInputSchema = z.object({
@@ -264,6 +278,60 @@ function setupMcpServer() {
     }
 }
 
+// --- IPC Server --- 
+function setupIpcServer(resolveListen: () => void, rejectListen: (err: Error) => void) {
+    cleanupPipe(); // Remove old socket file if it exists
+
+    const server = net.createServer((socket) => {
+        console.error(`[${SERVER_NAME}] IPC Client connected.`);
+        socket.on('data', (data) => {
+            const receivedString = data.toString('utf8').trim();
+            console.error(`[${SERVER_NAME}] Received via IPC: ${receivedString}`);
+            try {
+                const messageJson = JSON.parse(receivedString);
+                // Broadcast the received message
+                messageEmitter.emit('message', { source: 'ipc', data: messageJson });
+                socket.write(`IPC message received by ${SERVER_NAME}\n`); // Acknowledge client
+            } catch (parseError) {
+                console.error(`[${SERVER_NAME}] Error parsing JSON from IPC:`, parseError, `\nContent: ${receivedString}`);
+                socket.write(`Error: Failed to parse incoming JSON: ${parseError instanceof Error ? parseError.message : parseError}\n`);
+            }
+        });
+        socket.on('end', () => {
+            console.error(`[${SERVER_NAME}] IPC Client disconnected.`);
+        });
+        socket.on('error', (err) => {
+            console.error(`[${SERVER_NAME}] IPC Socket Error:`, err);
+        });
+    });
+
+    server.on('error', (err) => {
+        console.error(`[${SERVER_NAME}] FATAL: IPC Server Error:`, err);
+        writeNativeMessage({ status: "error", message: `IPC server error: ${err.message}` }).catch(console.error);
+        rejectListen(err); // Reject the startup promise
+        // process.exit(1); // Let the main startup handle exit
+    });
+
+    server.listen(PIPE_PATH, () => {
+        console.error(`[${SERVER_NAME}] IPC Server listening on ${PIPE_PATH}`);
+        ipcServer = server; // Assign to outer scope variable
+        resolveListen(); // Resolve the startup promise
+    });
+}
+
+function cleanupPipe() {
+    // Only unlink socket files on non-Windows platforms
+    if (process.platform !== 'win32' && fs.existsSync(PIPE_PATH)) {
+        try {
+            fs.unlinkSync(PIPE_PATH);
+            console.error(`[${SERVER_NAME}] Cleaned up existing socket file: ${PIPE_PATH}`);
+        } catch (err) {
+            console.error(`[${SERVER_NAME}] Error cleaning up socket file ${PIPE_PATH}:`, err);
+            // Decide if this is fatal? Maybe not.
+        }
+    }
+    // On Windows, named pipes are handled differently and don't usually leave files.
+}
 
 // --- Message Broadcasting Logic ---
 messageEmitter.on('message', (messagePayload: { source: string, data: any }) => {
@@ -284,6 +352,11 @@ messageEmitter.on('message', (messagePayload: { source: string, data: any }) => 
     // if (messagePayload.source !== 'mcp') {
     //   //  mcpServer?.notify(...) // Example placeholder
     // }
+
+    // Send back via IPC? (Echo or specific response?) - currently just sends simple ack
+    // if (messagePayload.source !== 'ipc') {
+       // How to target specific IPC client? Need to manage sockets.
+    // }
 });
 
 
@@ -294,35 +367,63 @@ async function startServer() {
     // Start listening for Native Messages FIRST, as Firefox connects immediately
     listenForNativeMessages();
 
-    // Start the Express server
-    const httpServer = http.createServer(app);
-    httpServer.listen(HTTP_PORT, () => {
-        console.error(`[${SERVER_NAME}] Express API/SSE server listening on http://localhost:${HTTP_PORT}`);
-        // Now that HTTP is up, signal readiness via Native Messaging
-         writeNativeMessage({
+    // Start HTTP and IPC servers concurrently
+    let httpReady = false;
+    let ipcReady = false;
+
+    const listenHttpPromise = new Promise<void>((resolve, reject) => {
+        const server = http.createServer(app);
+        server.listen(HTTP_PORT, () => {
+            console.error(`[${SERVER_NAME}] Express API/SSE server listening on http://localhost:${HTTP_PORT}`);
+            httpServer = server; // Assign to outer scope variable
+            httpReady = true; // Set flag (still useful for context)
+            // if (ipcReady) resolve(); // Removed check for other server
+            resolve(); // Resolve immediately when this server is ready
+        }).on('error', (err: NodeJS.ErrnoException) => {
+            console.error(`[${SERVER_NAME}] FATAL: Express server error:`, err);
+            writeNativeMessage({ status: "error", message: `HTTP server error: ${err.message}` }).catch(console.error);
+            if (err.code === 'EADDRINUSE') {
+                console.error(`*** Port ${HTTP_PORT} is already in use. Try setting NATIVE_MESSAGE_IO_PORT environment variable. ***`);
+                writeNativeMessage({ status: "error", message: `Port ${HTTP_PORT} in use.` }).catch(console.error);
+            }
+            reject(err);
+        });
+    });
+
+    const listenIpcPromise = new Promise<void>((resolve, reject) => {
+        setupIpcServer(() => {
+            ipcReady = true; // Set flag (still useful for context)
+            // if (httpReady) resolve(); // Removed check for other server
+            resolve(); // Resolve immediately when this server is ready
+        }, reject);
+    });
+
+    // Start MCP Server Part (doesn't need to block readiness signal)
+    setupMcpServer();
+
+    try {
+        // Wait for both HTTP and IPC servers to be ready
+        await Promise.all([listenHttpPromise, listenIpcPromise]);
+
+        console.error(`[${SERVER_NAME}] All required servers (HTTP, IPC) are listening.`);
+
+        // Now send the ready signal via Native Messaging
+        await writeNativeMessage({
             status: "ready",
             pid: process.pid,
             server: SERVER_NAME,
             version: SERVER_VERSION,
             apiPort: HTTP_PORT,
-            message: "Server ready, accepting Native Messaging, API/SSE, and MCP connections."
-        }).catch(err => {
-             console.error(`[${SERVER_NAME}] Failed to send initial ready message:`, err);
-             // Exit if we can't even signal readiness?
-             // process.exit(1);
+            ipcPath: PIPE_PATH, // Include IPC path
+            message: "Server ready, accepting Native Messaging, API/SSE, IPC, and MCP connections."
         });
-    }).on('error', (err: NodeJS.ErrnoException) => {
-        console.error(`[${SERVER_NAME}] FATAL: Express server error:`, err);
-         writeNativeMessage({ status: "error", message: `HTTP server error: ${err.message}`}).catch(console.error);
-        if (err.code === 'EADDRINUSE') {
-            console.error(`*** Port ${HTTP_PORT} is already in use. Try setting NATIVE_MESSAGE_IO_PORT environment variable. ***`);
-             writeNativeMessage({ status: "error", message: `Port ${HTTP_PORT} in use.`}).catch(console.error);
-        }
-        process.exit(1);
-    });
+         console.error(`[${SERVER_NAME}] Sent ready signal via Native Messaging.`);
 
-    // Start the MCP server part
-    setupMcpServer();
+    } catch (error) {
+        console.error(`[${SERVER_NAME}] FATAL: Server startup failed:`, error);
+        // Ensure we attempt cleanup/exit even if startup fails
+        process.exit(1);
+    }
 
     console.error(`[${SERVER_NAME}] All components initialized.`);
 }
@@ -336,30 +437,62 @@ function shutdown(signal: string) {
     sseClients.forEach(client => client.end());
     sseClients = [];
 
+    let httpClosed = false;
+    let ipcClosed = false;
+
+    const checkExit = () => {
+        if (httpClosed && ipcClosed) {
+            console.error(`[${SERVER_NAME}] All servers closed. Exiting.`);
+            // MCP StdioTransport doesn't need explicit close, relies on process exit
+             cleanupPipe(); // Clean up socket file on exit
+            process.exit(0);
+        }
+    };
+
     // Close HTTP server
-    // httpServer.close(() => { // httpServer is not in scope here - need to make it global or handle differently
-    //     console.error(`[${SERVER_NAME}] HTTP server closed.`);
-    // });
+    if (httpServer) {
+        console.error(`[${SERVER_NAME}] Closing HTTP server...`);
+        httpServer.close((err) => {
+            if (err) console.error(`[${SERVER_NAME}] Error closing HTTP server:`, err);
+            else console.error(`[${SERVER_NAME}] HTTP server closed.`);
+            httpClosed = true;
+            checkExit();
+        });
+    } else {
+        httpClosed = true;
+    }
 
-     // Close MCP server connection (if initialized)
-     // McpServer doesn't have an explicit close method exposed easily in this setup
-     // Relying on process exit might be sufficient for StdioTransport
+    // Close IPC server
+    if (ipcServer) {
+        console.error(`[${SERVER_NAME}] Closing IPC server...`);
+        ipcServer.close((err) => {
+            if (err) console.error(`[${SERVER_NAME}] Error closing IPC server:`, err);
+            else console.error(`[${SERVER_NAME}] IPC server closed.`);
+            ipcClosed = true;
+            checkExit();
+        });
+    } else {
+        ipcClosed = true;
+    }
 
-    console.error(`[${SERVER_NAME}] Shutdown complete.`);
-    process.exit(0);
+    // If servers aren't closing quickly, force exit after a timeout
+    setTimeout(() => {
+        console.error(`[${SERVER_NAME}] Shutdown timeout reached. Forcing exit.`);
+        cleanupPipe();
+        process.exit(1);
+    }, 5000); // 5 second timeout
 }
 
 process.on('SIGINT', () => shutdown('SIGINT'));
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 process.on('exit', (code) => {
     console.error(`[${SERVER_NAME}] Exiting with code ${code}`);
+    // Ensure pipe is cleaned up on any exit, though shutdown should handle it
+    // cleanupPipe(); // Called within shutdown now
 });
 
 // Start the server!
 startServer().catch(error => {
-     console.error(`[${SERVER_NAME}] Fatal error during startup:`, error);
+     console.error(`[${SERVER_NAME}] Fatal error during top-level startup:`, error);
      process.exit(1);
-});
-
-// Prevent Node from exiting immediately (needed especially if only stdin/stdout are active)
-// process.stdin.resume(); // Already handled by the listener attaching 
+}); 
