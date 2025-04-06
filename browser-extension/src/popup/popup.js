@@ -9,6 +9,7 @@ let httpStatusDiv;
 let ipcStatusDiv;
 let mcpStatusDiv;
 let connectedBanner;
+let httpPortDisplay;
 
 document.addEventListener('DOMContentLoaded', () => {
     console.log("[Popup] DOMContentLoaded event fired.");
@@ -21,10 +22,11 @@ document.addEventListener('DOMContentLoaded', () => {
     ipcStatusDiv = document.getElementById('ipcStatus');
     mcpStatusDiv = document.getElementById('mcpStatus');
     connectedBanner = document.getElementById('connectedBanner');
+    httpPortDisplay = document.getElementById('httpPortDisplay');
 
-    console.log(`[Popup] Elements acquired: statusDiv=${!!statusDiv}, toggleButton=${!!toggleButton}, componentStatusContainer=${!!componentStatusContainer}`);
+    console.log(`[Popup] Elements acquired: statusDiv=${!!statusDiv}, toggleButton=${!!toggleButton}, componentStatusContainer=${!!componentStatusContainer}, httpPortDisplay=${!!httpPortDisplay}`);
 
-    if (toggleButton && statusDiv && iconImage && errorMessageDiv && componentStatusContainer && httpStatusDiv && ipcStatusDiv && mcpStatusDiv && connectedBanner) {
+    if (toggleButton && statusDiv && iconImage && errorMessageDiv && componentStatusContainer && httpStatusDiv && ipcStatusDiv && mcpStatusDiv && connectedBanner && httpPortDisplay) {
         updateUI(false, 'Checking...'); // Initial state
         toggleButton.addEventListener('click', handleToggleButtonClick);
         console.log("[Popup] Added toggle button listener.");
@@ -38,9 +40,9 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 /** Updates the UI elements based on connection status and component details */
-function updateUI(isConnected, status, components) {
-    console.log(`[Popup:updateUI] Called with isConnected=${isConnected}, status=${status}, components=`, components);
-    if (!toggleButton || !statusDiv || !iconImage || !errorMessageDiv || !componentStatusContainer || !httpStatusDiv || !ipcStatusDiv || !mcpStatusDiv || !connectedBanner) {
+function updateUI(isConnected, status, components, httpPort) {
+    console.log(`[Popup:updateUI] Called with isConnected=${isConnected}, status=${status}, components=`, components, `, httpPort=${httpPort}`);
+    if (!toggleButton || !statusDiv || !iconImage || !errorMessageDiv || !componentStatusContainer || !httpStatusDiv || !ipcStatusDiv || !mcpStatusDiv || !connectedBanner || !httpPortDisplay) {
         console.error("[Popup:updateUI] Missing UI elements.");
         return;
     }
@@ -58,6 +60,7 @@ function updateUI(isConnected, status, components) {
     updateComponentStatusDiv(httpStatusDiv);
     updateComponentStatusDiv(ipcStatusDiv);
     updateComponentStatusDiv(mcpStatusDiv);
+    httpPortDisplay.textContent = '';
 
     // --- Apply new states ---
     if (isConnected) {
@@ -76,6 +79,9 @@ function updateUI(isConnected, status, components) {
         updateComponentStatusDiv(ipcStatusDiv, components?.ipc);
         updateComponentStatusDiv(mcpStatusDiv, components?.mcp);
 
+        if (httpPort) {
+            httpPortDisplay.textContent = `:${httpPort}`;
+        }
     } else {
         statusDiv.style.display = 'block'; // Show general status text when disconnected
         connectedBanner.classList.add('status-hidden');
@@ -102,6 +108,7 @@ function updateUI(isConnected, status, components) {
             toggleButton.classList.add('status-green');
             if(status) errorMessageDiv.textContent = status;
         }
+        httpPortDisplay.textContent = '';
         console.log(`[Popup:updateUI] Setting state to Disconnected/Error (${status}).`);
     }
 }
@@ -109,24 +116,23 @@ function updateUI(isConnected, status, components) {
 /** Helper to update a single component status div */
 function updateComponentStatusDiv(div, status) {
     if (!div) return;
-    // const indicator = div.querySelector('.indicator'); // No longer needed
-    // if (!indicator) return;
+    const checkSpan = div.querySelector('.status-check'); // Get the span for the checkmark
+    if (!checkSpan) return; // Should exist after HTML change
 
-    // Reset classes
+    // Reset classes and checkmark
     div.className = 'component-status'; // Base class
+    checkSpan.textContent = ''; // Clear checkmark
 
     if (status === undefined || status === 'pending') {
-        // indicator.textContent = '?'; // No text needed
         div.classList.add('status-grey');
     } else if (status === 'OK') {
-        // indicator.textContent = 'OK'; // No text needed
         div.classList.add('status-green');
+        checkSpan.textContent = ' ✔️'; // Add checkmark for OK status
     } else if (status.startsWith('Error:')) {
-        // indicator.textContent = 'Error'; // No text needed
         div.title = status; // Show full error on hover
         div.classList.add('status-red');
+        checkSpan.textContent = ' ❌'; // Add an 'x' for errors
     } else {
-        // indicator.textContent = status; // No text needed
         div.classList.add('status-grey');
     }
 }
@@ -165,7 +171,7 @@ function getInitialStatus() {
                 console.log("[Popup:getInitialStatus] Received response: ", response);
                 if (response.status === 'connected') {
                     console.log("[Popup:getInitialStatus] Status is connected, calling updateUI.");
-                    updateUI(true, 'Connected', response.components);
+                    updateUI(true, 'Connected', response.components, response.httpPort);
                 } else {
                     console.log("[Popup:getInitialStatus] Status is disconnected, calling updateUI(false).");
                     updateUI(false, 'Disconnected');
@@ -194,11 +200,11 @@ browser.runtime.onMessage.addListener((message, sender) => {
     } else if (message.type === "FROM_NATIVE" && message.payload?.status === 'ready') {
         // Handle the initial 'ready' signal forwarded from native host
          console.log("[Popup:onMessage] Received forwarded 'ready' message. Updating UI.");
-         updateUI(true, 'Connected', message.payload.components);
+         updateUI(true, 'Connected', message.payload.components, message.payload.httpPort);
     } else if (message.type === "NATIVE_STATUS_UPDATE") {
         // Handle subsequent status updates directly from background
         console.log("[Popup:onMessage] Received status update. Updating UI.");
-        updateUI(message.payload.isConnected, message.payload.isConnected ? 'Connected' : 'Disconnected', message.payload.components);
+        updateUI(message.payload.isConnected, message.payload.isConnected ? 'Connected' : 'Disconnected', message.payload.components, message.payload.httpPort);
     }
 });
 console.log("[Popup] Added runtime.onMessage listener."); 

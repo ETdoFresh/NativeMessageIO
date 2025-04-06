@@ -55,11 +55,29 @@ body {
     display: flex;
     justify-content: center;
     align-items: center;
+    margin-bottom: 6px; /* Add space below component status indicators */
+}
+
+.component-status:last-child {
+    margin-bottom: 0; /* Remove margin from the last status indicator */
 }
 
 .status-text { /* Specific override for status text block */
     justify-content: center;
     margin-bottom: 10px; /* Add specific margin */
+}
+
+/* Style for the checkmark span */
+.status-check {
+    margin-left: 5px; /* Add a little space before the checkmark */
+    display: inline-block; /* Ensure it takes space */
+}
+
+/* Style for the port display span */
+.port-display {
+    font-size: 0.8em; /* Smaller font size */
+    color: #ffffff;  /* White color */
+    margin-left: 4px; /* Space before the port */
 }
 
 /* Hide/Show Components Area */

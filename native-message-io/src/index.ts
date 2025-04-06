@@ -20,9 +20,13 @@ const SERVER_NAME = "native-message-io-multi";
 const SERVER_VERSION = "1.2.1"; // Incremented version
 
 // --- IPC Configuration ---
-const PIPE_DIR = os.tmpdir();
-const PIPE_NAME = `native-message-io-ipc-pipe-${Date.now()}`;
-const PIPE_PATH = path.join(PIPE_DIR, process.platform === 'win32' ? PIPE_NAME : `${PIPE_NAME}.sock`);
+// Use a FIXED name
+const PIPE_NAME = 'native-message-io-ipc-pipe';
+
+// Construct the correct path based on the platform
+const PIPE_PATH = process.platform === 'win32'
+    ? path.join('\\\\.\\pipe\\', PIPE_NAME) // Windows named pipe path
+    : path.join(os.tmpdir(), `${PIPE_NAME}.sock`); // Unix domain socket path in /tmp
 
 // --- Central Event Emitter ---
 // Used to broadcast messages received from any source
@@ -300,77 +304,86 @@ function setupMcpServer() {
     }
 }
 
-// --- IPC Server --- 
-// Restore IPC Server section
+// --- IPC Server ---
+// Wrapped in Promise for startup coordination
 function setupIpcServer(resolveListen: () => void, rejectListen: (err: Error) => void) {
-    cleanupPipe(); // Remove old socket file if it exists
+    cleanupPipe(); // Remove old socket file if it exists (important for non-Windows)
 
     const server = net.createServer((socket) => {
-        logStdErr(`IPC Client connected.`);
+        logStdErr(`IPC Client connected from ${socket.remoteAddress || 'unknown'}`);
+
         socket.on('data', (data) => {
-            const receivedString = data.toString('utf8').trim();
-            logStdErr(`Received via IPC: ${receivedString}`);
             try {
-                const messageJson = JSON.parse(receivedString);
-
-                // *** Check for log request action ***
-                if (messageJson.action === 'getBrowserLogs') {
-                    logStdErr(`IPC request received to get browser logs. Sending 'get-logs' command via Native Messaging.`);
-                    writeNativeMessage({ command: "get-logs" })
-                        .then(() => {
-                             socket.write(`IPC log request sent to browser\n`); // Acknowledge request sent
-                        })
-                        .catch(err => {
-                             logStdErr(`Error sending get-logs command via IPC request:`, err);
-                             socket.write(`Error sending log request to browser: ${err.message}\n`);
-                        });
-                    return; // Don't broadcast the request itself
-                }
-                // *** End check for log request action ***
-
-                // Broadcast other valid messages
+                const messageString = data.toString('utf8');
+                const messageJson = JSON.parse(messageString);
+                logStdErr(`Received via IPC: ${messageString.substring(0, 100)}...`);
+                // Broadcast message received via IPC
                 messageEmitter.emit('message', { source: 'ipc', data: messageJson });
-                socket.write(`IPC message received by ${SERVER_NAME}\n`); // Acknowledge client
-            } catch (parseError) {
-                logStdErr(`Error parsing JSON from IPC:`, parseError, `\nContent: ${receivedString}`);
-                const errorMsg = parseError instanceof Error ? parseError.message : String(parseError);
-                socket.write(`Error: Failed to parse incoming JSON: ${errorMsg}\n`);
+                socket.write(JSON.stringify({ status: "received" }) + '\n'); // Acknowledge
+            } catch (e) {
+                logStdErr('Error processing IPC data:', e);
+                socket.write(JSON.stringify({ status: "error", message: "Failed to parse JSON" }) + '\n');
             }
         });
-        socket.on('end', () => {
-            logStdErr(`IPC Client disconnected.`);
-        });
+
         socket.on('error', (err) => {
             logStdErr(`IPC Socket Error:`, err);
         });
+
+        socket.on('end', () => {
+            logStdErr(`IPC Client disconnected.`);
+        });
     });
 
-    server.on('error', (err) => {
+    server.on('error', (err: NodeJS.ErrnoException) => { // Add type NodeJS.ErrnoException
         logStdErr(`FATAL: IPC Server Error:`, err);
-        writeNativeMessage({ status: "error", message: `IPC server error: ${err.message}` }).catch(logStdErr);
+        // Add specific check for EADDRINUSE
+        if (err.code === 'EADDRINUSE') {
+            logStdErr(`IPC Pipe ${PIPE_PATH} is already in use. Ensure no other instance is running or cleanup failed.`);
+        }
+        componentStatus.ipc = "error";
+        messageEmitter.emit('status', componentStatus);
+        writeNativeMessage({ status: "error", message: `IPC server error: ${err.message} (Code: ${err.code})` }).catch(logStdErr);
         rejectListen(err); // Reject the startup promise
     });
 
+    logStdErr(`Attempting to listen on IPC path: ${PIPE_PATH}`); // Log the path being used
+
     server.listen(PIPE_PATH, () => {
-        logStdErr(`IPC Server listening on ${PIPE_PATH}`);
+        logStdErr(`IPC Server listening successfully on ${PIPE_PATH}`);
         ipcServer = server; // Assign to outer scope variable
+        componentStatus.ipc = "ok";
+        messageEmitter.emit('status', componentStatus);
+
+        // Set permissions for Unix sockets (optional but good practice)
+        if (process.platform !== 'win32') {
+            try {
+                fs.chmodSync(PIPE_PATH, '777'); // Or more restrictive permissions like '600' or '660'
+                logStdErr(`Set permissions for socket file: ${PIPE_PATH}`);
+            } catch (chmodErr) {
+                 logStdErr(`Warning: Could not set permissions for socket file ${PIPE_PATH}:`, chmodErr);
+                 // Depending on requirements, you might want to rejectListen(chmodErr) here
+            }
+        }
+
         resolveListen(); // Resolve the startup promise
     });
 }
 
 function cleanupPipe() {
-    // Special handling for Windows named pipes - they don't exist as files in the temp dir.
-    // For Unix sockets (non-Windows), we attempt cleanup.
+    // Only unlink Unix sockets, Windows Named Pipes don't use filesystem paths this way
     if (process.platform !== 'win32' && fs.existsSync(PIPE_PATH)) {
         try {
             fs.unlinkSync(PIPE_PATH);
             logStdErr(`Cleaned up existing socket file: ${PIPE_PATH}`);
         } catch (err) {
             logStdErr(`Error cleaning up socket file ${PIPE_PATH}:`, err);
+            // Don't throw here, maybe it was already gone or permissions issue
         }
+    } else if (process.platform === 'win32') {
+         logStdErr(`Skipping filesystem cleanup for Windows named pipe: ${PIPE_PATH}`);
     }
 }
-// End Restore IPC Server section
 
 // --- Message Broadcasting Logic ---
 messageEmitter.on('message', (messagePayload: { source: string, data: any }) => {
@@ -470,9 +483,10 @@ async function startServer() {
                 server: SERVER_NAME,
                 version: SERVER_VERSION,
                 components: componentStatus, // Send detailed status
+                httpPort: HTTP_PORT, // Add the HTTP port
                 message: "Server ready signal sent. Check component status."
             });
-            logStdErr(`Sent ready signal via Native Messaging with component status.`);
+            logStdErr(`Sent ready signal via Native Messaging with component status and HTTP port.`);
         } else {
              logStdErr(`Native messaging not available, cannot send ready signal.`);
         }
