@@ -5,13 +5,14 @@
   "main": "index.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "build": "tsc && copyfiles -u 1 popup/*.html popup/*.css icons/native-host-control-128.png dist/popup"
+    "build": "tsc && copyfiles -f src/popup/*.html src/popup/*.css icons/*.png dist/popup"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "type": "commonjs",
   "devDependencies": {
+    "@types/chrome": "^0.0.313",
     "@types/firefox-webext-browser": "^120.0.4",
     "copyfiles": "^2.4.1",
     "typescript": "^5.8.3"
