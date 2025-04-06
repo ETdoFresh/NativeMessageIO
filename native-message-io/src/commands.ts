@@ -1,7 +1,7 @@
 import { logStdErr } from './utils/logger.js';
 import { writeNativeMessage } from './native-messaging.js';
 import { SERVER_NAME, SERVER_VERSION, HTTP_PORT, PIPE_PATH } from './config.js'; // Import config
-import { componentStatus } from './state.js'; // Import state
+import { componentStatus, messageEmitter } from './state.js'; // Import state AND messageEmitter
 
 // --- Simplified Command Handling ---
 
@@ -65,17 +65,53 @@ async function handlePing(args: string[]): Promise<string> {
 
 // Command: Get Browser Logs
 // Usage: `getBrowserLogs`
+// Waits for a response from the browser extension.
 async function handleGetBrowserLogs(args: string[]): Promise<string> {
-    logStdErr(`Executing getBrowserLogs command. Sending 'get-logs' via Native Messaging.`);
-    try {
-        // Native message format itself might need adjustment later if it also must conform
-        await writeNativeMessage({ command: "get-logs" });
-        return `[PENDING] Log request sent to browser extension.`;
-    } catch (err) {
-         logStdErr(`Error sending get-logs command to Native Messaging:`, err);
-         // Let handleCommandString catch and format the error prefix
-         throw new Error('Failed to send log request to browser extension.');
-    }
+    logStdErr(`Executing getBrowserLogs command. Sending 'get-logs' and waiting for response...`);
+
+    // Timeout duration in milliseconds (e.g., 10 seconds)
+    const TIMEOUT_MS = 10000;
+
+    return new Promise<string>((resolve, reject) => {
+        let timeoutId: NodeJS.Timeout | null = null;
+        let listener: ((logs: any[]) => void) | null = null;
+
+        // Function to clean up listeners and timeout
+        const cleanup = () => {
+            if (timeoutId) clearTimeout(timeoutId);
+            if (listener) messageEmitter.removeListener('browser_logs_received', listener);
+        };
+
+        // Set up the listener for the log response
+        listener = (logs: any[]) => {
+            logStdErr(`Received browser_logs_received event with ${logs.length} logs.`);
+            cleanup();
+            // Format the response. Assuming logs is an array of objects/strings.
+            // Adjust JSON.stringify if a different format is needed.
+            resolve(`[SUCCESS] ${JSON.stringify(logs)}`);
+        };
+        messageEmitter.once('browser_logs_received', listener);
+
+        // Set up the timeout
+        timeoutId = setTimeout(() => {
+            logStdErr(`Timeout waiting for browser logs after ${TIMEOUT_MS}ms.`);
+            cleanup();
+            // Reject will be caught by handleCommandString and formatted as [ERROR]
+            reject(new Error(`Timeout: No logs received from browser extension within ${TIMEOUT_MS / 1000} seconds.`));
+        }, TIMEOUT_MS);
+
+        // Send the command to the browser extension
+        writeNativeMessage({ command: "get-logs" })
+            .then(() => {
+                logStdErr("Sent 'get-logs' command successfully.");
+                // Now we just wait for the listener or timeout
+            })
+            .catch((err) => {
+                logStdErr(`Error sending 'get-logs' command via Native Messaging:`, err);
+                cleanup();
+                reject(new Error('Failed to send log request to browser extension.'));
+            });
+    });
 }
 
 // Command: Get Server Status

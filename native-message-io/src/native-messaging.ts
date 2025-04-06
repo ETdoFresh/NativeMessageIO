@@ -56,8 +56,10 @@ export function listenForNativeMessages() {
 
                         // Handle log response
                         if (messageJson.status === 'logs' && Array.isArray(messageJson.logs)) {
-                           logStdErr(`Received browser logs (${messageJson.logs.length} entries). Processing...`);
-                           // Print logs to stderr
+                           logStdErr(`Received browser logs (${messageJson.logs.length} entries). Emitting event...`);
+                           // Emit an event with the logs instead of just printing
+                           messageEmitter.emit('browser_logs_received', messageJson.logs);
+                           // Keep logging to stderr for now as well for debugging? Optional.
                            messageJson.logs.forEach((log: any) => {
                                if (log && typeof log.timestamp === 'number' && typeof log.message === 'string') {
                                    logStdErr(`[Browser Log - ${new Date(log.timestamp).toISOString()}] ${log.message}`);
@@ -65,8 +67,6 @@ export function listenForNativeMessages() {
                                    logStdErr(`[Browser Log - Invalid Format]`, log);
                                }
                            });
-                           // Optionally re-emit if other parts need raw logs
-                           // messageEmitter.emit('browser_logs', { source: 'native-messaging', logs: messageJson.logs });
                         } else {
                            // Broadcast other valid messages
                            messageEmitter.emit('message', { source: 'native-messaging', data: messageJson });
