@@ -54,22 +54,75 @@ export function listenForNativeMessages() {
                         const messageJson = JSON.parse(messageString);
                         logStdErr(`Received Native Message: ${messageString.substring(0,100)}...`);
 
-                        // Handle log response
-                        if (messageJson.status === 'logs' && Array.isArray(messageJson.logs)) {
-                           logStdErr(`Received browser logs (${messageJson.logs.length} entries). Emitting event...`);
-                           // Emit an event with the logs instead of just printing
-                           messageEmitter.emit('browser_logs_received', messageJson.logs);
-                           // Keep logging to stderr for now as well for debugging? Optional.
-                           messageJson.logs.forEach((log: any) => {
-                               if (log && typeof log.timestamp === 'number' && typeof log.message === 'string') {
-                                   logStdErr(`[Browser Log - ${new Date(log.timestamp).toISOString()}] ${log.message}`);
-                               } else {
-                                   logStdErr(`[Browser Log - Invalid Format]`, log);
-                               }
-                           });
-                        } else {
-                           // Broadcast other valid messages
-                           messageEmitter.emit('message', { source: 'native-messaging', data: messageJson });
+                        // --- Event Emitter Logic ---
+                        // Standardize data emission based on messageJson.status
+
+                        switch (messageJson.status) {
+                            // Console related
+                            case 'console_logs': // Response for get_console_logs
+                                if (Array.isArray(messageJson.logs)) {
+                                    logStdErr(`Received console logs (${messageJson.logs.length}). Emitting 'console_logs_received'.`);
+                                    messageEmitter.emit('console_logs_received', messageJson.logs);
+                                } else { logStdErr(`Invalid 'console_logs' format:`, messageJson); }
+                                break;
+                            case 'console_warnings': // Response for get_console_warnings
+                                if (Array.isArray(messageJson.warnings)) {
+                                    logStdErr(`Received console warnings (${messageJson.warnings.length}). Emitting 'console_warnings_received'.`);
+                                    messageEmitter.emit('console_warnings_received', messageJson.warnings);
+                                } else { logStdErr(`Invalid 'console_warnings' format:`, messageJson); }
+                                break;
+                             case 'console_errors': // Response for get_console_errors
+                                if (Array.isArray(messageJson.errors)) {
+                                    logStdErr(`Received console errors (${messageJson.errors.length}). Emitting 'console_errors_received'.`);
+                                    messageEmitter.emit('console_errors_received', messageJson.errors);
+                                } else { logStdErr(`Invalid 'console_errors' format:`, messageJson); }
+                                break;
+                             case 'console_all': // Response for get_console_all
+                                // Expecting an object like { logs: [], warnings: [], errors: [] }
+                                if (messageJson.data && typeof messageJson.data === 'object') {
+                                    logStdErr(`Received all console messages. Emitting 'console_all_received'.`);
+                                    messageEmitter.emit('console_all_received', messageJson.data);
+                                } else { logStdErr(`Invalid 'console_all' format:`, messageJson); }
+                                break;
+                            case 'console_cleared': // Response for clear_console
+                                logStdErr(`Received console cleared confirmation. Emitting 'console_cleared_confirmation'.`);
+                                messageEmitter.emit('console_cleared_confirmation');
+                                break;
+
+                            // Network related
+                            case 'network_errors': // Response for get_network_errors
+                                 if (Array.isArray(messageJson.errors)) {
+                                    logStdErr(`Received network errors (${messageJson.errors.length}). Emitting 'network_errors_received'.`);
+                                    messageEmitter.emit('network_errors_received', messageJson.errors);
+                                } else { logStdErr(`Invalid 'network_errors' format:`, messageJson); }
+                                break;
+
+                            // Browser interaction
+                             case 'screenshot_data': // Response for get_screenshot
+                                // Assuming screenshot data is a base64 string
+                                if (typeof messageJson.data === 'string') {
+                                    logStdErr(`Received screenshot data. Emitting 'screenshot_received'.`);
+                                    messageEmitter.emit('screenshot_received', messageJson.data);
+                                } else { logStdErr(`Invalid 'screenshot_data' format:`, messageJson); }
+                                break;
+                            case 'selected_element_data': // Response for get_selected_element
+                                // Assuming element data is an object or string representation
+                                if (messageJson.data !== undefined) {
+                                    logStdErr(`Received selected element data. Emitting 'selected_element_received'.`);
+                                    messageEmitter.emit('selected_element_received', messageJson.data);
+                                } else { logStdErr(`Invalid 'selected_element_data' format:`, messageJson); }
+                                break;
+
+                            // General / Unhandled
+                            case 'error': // Handle errors sent explicitly by the extension
+                                logStdErr(`Received error message from extension: ${messageJson.message || 'Unknown error'}`);
+                                // Optionally emit a generic error event for the specific command waiting? Needs correlation.
+                                // For now, the waiting promise will just timeout.
+                                break;
+                            default:
+                                // Broadcast other valid messages if needed by other parts of the app
+                                logStdErr(`Received unhandled message status '${messageJson.status}'. Emitting generic 'message'.`);
+                                messageEmitter.emit('message', { source: 'native-messaging', data: messageJson });
                         }
 
                     } catch (parseError) {

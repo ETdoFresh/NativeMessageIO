@@ -54,6 +54,43 @@ export async function handleCommandString(message: string): Promise<string> {
     }
 }
 
+// --- Helper for Asynchronous Native Message Commands ---
+// Sends a command and waits for a specific event from the message emitter.
+async function sendAndWait<T>(command: object, eventName: string, timeoutMs: number = 10000): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+        let timeoutId: NodeJS.Timeout | null = null;
+        let listener: ((data: T) => void) | null = null;
+
+        const cleanup = () => {
+            if (timeoutId) clearTimeout(timeoutId);
+            if (listener) messageEmitter.removeListener(eventName, listener);
+        };
+
+        listener = (data: T) => {
+            logStdErr(`Received ${eventName} event.`);
+            cleanup();
+            resolve(data);
+        };
+        messageEmitter.once(eventName, listener);
+
+        timeoutId = setTimeout(() => {
+            logStdErr(`Timeout waiting for ${eventName} after ${timeoutMs}ms.`);
+            cleanup();
+            reject(new Error(`Timeout: No response received for ${eventName} within ${timeoutMs / 1000} seconds.`));
+        }, timeoutMs);
+
+        writeNativeMessage(command)
+            .then(() => {
+                logStdErr(`Sent command ${JSON.stringify(command)} successfully.`);
+            })
+            .catch((err) => {
+                logStdErr(`Error sending command ${JSON.stringify(command)}:`, err);
+                cleanup();
+                reject(new Error(`Failed to send command ${JSON.stringify(command)} to browser extension.`));
+            });
+    });
+}
+
 // --- Built-in Commands ---
 
 // Example: Ping command
@@ -63,55 +100,63 @@ async function handlePing(args: string[]): Promise<string> {
     return `[SUCCESS] pong ${responseText}`;
 }
 
-// Command: Get Browser Logs
-// Usage: `getBrowserLogs`
-// Waits for a response from the browser extension.
-async function handleGetBrowserLogs(args: string[]): Promise<string> {
-    logStdErr(`Executing getBrowserLogs command. Sending 'get-logs' and waiting for response...`);
+// Command: get_console_logs
+async function handleGetConsoleLogs(args: string[]): Promise<string> {
+    logStdErr(`Executing get_console_logs command...`);
+    const logs = await sendAndWait<any[]>({ command: 'get_console_logs' }, 'console_logs_received');
+    return `[SUCCESS] ${JSON.stringify(logs)}`;
+}
 
-    // Timeout duration in milliseconds (e.g., 10 seconds)
-    const TIMEOUT_MS = 10000;
+// Command: get_console_warnings
+async function handleGetConsoleWarnings(args: string[]): Promise<string> {
+    logStdErr(`Executing get_console_warnings command...`);
+    const warnings = await sendAndWait<any[]>({ command: 'get_console_warnings' }, 'console_warnings_received');
+    return `[SUCCESS] ${JSON.stringify(warnings)}`;
+}
 
-    return new Promise<string>((resolve, reject) => {
-        let timeoutId: NodeJS.Timeout | null = null;
-        let listener: ((logs: any[]) => void) | null = null;
+// Command: get_console_errors
+async function handleGetConsoleErrors(args: string[]): Promise<string> {
+    logStdErr(`Executing get_console_errors command...`);
+    const errors = await sendAndWait<any[]>({ command: 'get_console_errors' }, 'console_errors_received');
+    return `[SUCCESS] ${JSON.stringify(errors)}`;
+}
 
-        // Function to clean up listeners and timeout
-        const cleanup = () => {
-            if (timeoutId) clearTimeout(timeoutId);
-            if (listener) messageEmitter.removeListener('browser_logs_received', listener);
-        };
+// Command: get_console_all
+async function handleGetConsoleAll(args: string[]): Promise<string> {
+    logStdErr(`Executing get_console_all command...`);
+    // Expecting data = { logs: [], warnings: [], errors: [] }
+    const allData = await sendAndWait<object>({ command: 'get_console_all' }, 'console_all_received');
+    return `[SUCCESS] ${JSON.stringify(allData)}`;
+}
 
-        // Set up the listener for the log response
-        listener = (logs: any[]) => {
-            logStdErr(`Received browser_logs_received event with ${logs.length} logs.`);
-            cleanup();
-            // Format the response. Assuming logs is an array of objects/strings.
-            // Adjust JSON.stringify if a different format is needed.
-            resolve(`[SUCCESS] ${JSON.stringify(logs)}`);
-        };
-        messageEmitter.once('browser_logs_received', listener);
+// Command: clear_console
+async function handleClearConsole(args: string[]): Promise<string> {
+    logStdErr(`Executing clear_console command...`);
+    // This command just waits for a confirmation event, no data expected
+    await sendAndWait<void>({ command: 'clear_console' }, 'console_cleared_confirmation');
+    return `[SUCCESS] Console cleared signal sent and confirmed.`;
+}
 
-        // Set up the timeout
-        timeoutId = setTimeout(() => {
-            logStdErr(`Timeout waiting for browser logs after ${TIMEOUT_MS}ms.`);
-            cleanup();
-            // Reject will be caught by handleCommandString and formatted as [ERROR]
-            reject(new Error(`Timeout: No logs received from browser extension within ${TIMEOUT_MS / 1000} seconds.`));
-        }, TIMEOUT_MS);
+// Command: get_network_errors
+async function handleGetNetworkErrors(args: string[]): Promise<string> {
+    logStdErr(`Executing get_network_errors command...`);
+    const errors = await sendAndWait<any[]>({ command: 'get_network_errors' }, 'network_errors_received');
+    return `[SUCCESS] ${JSON.stringify(errors)}`;
+}
 
-        // Send the command to the browser extension
-        writeNativeMessage({ command: "get-logs" })
-            .then(() => {
-                logStdErr("Sent 'get-logs' command successfully.");
-                // Now we just wait for the listener or timeout
-            })
-            .catch((err) => {
-                logStdErr(`Error sending 'get-logs' command via Native Messaging:`, err);
-                cleanup();
-                reject(new Error('Failed to send log request to browser extension.'));
-            });
-    });
+// Command: get_screenshot
+async function handleGetScreenshot(args: string[]): Promise<string> {
+    logStdErr(`Executing get_screenshot command...`);
+    // Expecting data = base64 string
+    const screenshotData = await sendAndWait<string>({ command: 'get_screenshot' }, 'screenshot_received', 20000); // Longer timeout for screenshot
+    return `[SUCCESS] Screenshot data received (length: ${screenshotData.length})`; // Avoid logging full base64 string
+}
+
+// Command: get_selected_element
+async function handleGetSelectedElement(args: string[]): Promise<string> {
+    logStdErr(`Executing get_selected_element command...`);
+    const elementData = await sendAndWait<any>({ command: 'get_selected_element' }, 'selected_element_received');
+    return `[SUCCESS] ${JSON.stringify(elementData)}`;
 }
 
 // Command: Get Server Status
@@ -142,7 +187,24 @@ async function handleStatusCommand(args: string[]): Promise<string> {
 
 // --- Register Built-in Commands ---
 registerCommand('ping', handlePing);
-registerCommand('getBrowserLogs', handleGetBrowserLogs);
+registerCommand('get_console_logs', handleGetConsoleLogs); // Renamed
+registerCommand('get_console_warnings', handleGetConsoleWarnings);
+registerCommand('get_console_errors', handleGetConsoleErrors);
+registerCommand('get_console_all', handleGetConsoleAll);
+registerCommand('clear_console', handleClearConsole);
+registerCommand('get_network_errors', handleGetNetworkErrors);
+registerCommand('get_screenshot', handleGetScreenshot);
+registerCommand('get_selected_element', handleGetSelectedElement);
 registerCommand('status', handleStatusCommand); // Register new command
+
+// Command: help
+async function handleHelp(args: string[]): Promise<string> {
+    logStdErr(`Executing help command...`);
+    const commandNames = Array.from(commandRegistry.keys()).sort();
+    const helpText = `Available commands:\n  ${commandNames.join('\n  ')}`;
+    return `[SUCCESS]\n${helpText}`;
+}
+
+registerCommand('help', handleHelp); // Register help command
 
 // --- TODO: Add more commands here --- 

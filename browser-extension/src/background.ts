@@ -27,6 +27,10 @@ let nativeHostStatus: { isConnected: boolean; components: { [key: string]: strin
 
 const APP_TITLE = "Native Message IO";
 
+// Store icon path (relative to extension root)
+const ICON_DEFAULT = "icons/native-host-control-128.png"; // Added definition
+const ICON_CONNECTED = "icons/native-host-control-connected-128.png"; // Define connected icon path
+
 // Function to update title
 function updateTitle(isConnected: boolean, statusText?: string) {
     const state = isConnected ? "Connected" : (statusText || "Disconnected");
@@ -35,235 +39,289 @@ function updateTitle(isConnected: boolean, statusText?: string) {
     });
 }
 
-// Listener for messages FROM POPUP or other extension parts
-logToBuffer("[Background] Attaching runtime.onMessage listener..."); // Use buffered log
-browser.runtime.onMessage.addListener((message: any, sender: browser.runtime.MessageSender, sendResponse: (response?: any) => void) => {
-  logToBuffer(`[Background:onMessage] Received message from extension: ${JSON.stringify(message)}`); // Use buffered log
-  const command = message?.command;
+// Define the name of the native application (must match the native app manifest)
+const NATIVE_APP_NAME = "native_message_io_etdofresh";
 
-  if (command === "toggle") {
-    if (port) {
-      logToBuffer("[Background:onMessage:toggle] Port exists. Calling disconnect()"); // Use buffered log
-      disconnect();
-      logToBuffer("[Background:onMessage:toggle] Sending response { status: 'disconnecting' }"); // Use buffered log
-      sendResponse({ status: "disconnecting" });
-    } else {
-      logToBuffer("[Background:onMessage:toggle] Port is null. Calling connect()"); // Use buffered log
-      connect(); // connect() is async
-      logToBuffer("[Background:onMessage:toggle] Sending response { status: 'connecting' }"); // Use buffered log
-      sendResponse({ status: "connecting" });
+let nativePort: browser.runtime.Port | null = null;
+let connectionStatus = "Disconnected";
+let lastError: string | null = null;
+// Variables to store last known state from 'ready' message
+let lastKnownComponents: { [key: string]: string } | undefined = undefined;
+let lastKnownHttpPort: number | undefined = undefined;
+
+// Define expected message structure from native host
+interface NativeMessage {
+    status?: string; // Example property
+    pid?: number;
+    received?: any;
+    // Add other potential properties if needed
+    [key: string]: any; // Allow flexibility
+}
+
+// Modify updatePopupStatus to accept optional components and httpPort
+function updatePopupStatus(components?: { [key: string]: string }, httpPort?: number) {
+    const isConnected = nativePort !== null;
+    let statusText = `Status: ${connectionStatus}`;
+    if (lastError && !isConnected) {
+        statusText += ` (Error: ${lastError})`;
     }
-    return true;
-  } else if (command === "getStatus") {
-    if (port) {
-      logToBuffer("[Background:onMessage:getStatus] Port exists. Sending detailed status."); // Use buffered log
-      sendResponse({ status: "connected", components: nativeHostStatus.components });
-    } else {
-      logToBuffer("[Background:onMessage:getStatus] Port is null. Sending { status: 'disconnected' }"); // Use buffered log
-      sendResponse({ status: "disconnected", components: {} });
+
+    // Change the message format to use 'type' and 'payload'
+    const messageToSend = {
+        type: "NATIVE_STATUS_UPDATE", // Use the type popup.js expects
+        payload: {
+            isConnected: isConnected,
+            statusText: statusText,
+            // Include components and httpPort if provided
+            components: components, // Will be undefined if not passed
+            httpPort: httpPort     // Will be undefined if not passed
+        }
+    };
+
+    browser.runtime.sendMessage(messageToSend).catch(err => {
+        // Ignore errors if popup is not open
+        if (err.message.includes("Could not establish connection")) return;
+        console.warn("Error sending status update to popup:", err);
+    });
+}
+
+function connect() {
+    if (nativePort) {
+        console.log("Already connected.");
+        return;
     }
-    return true;
-  } else if (command === "sendMessageToNative") {
-    if (port) {
-      try {
-        logToBuffer(`[Background:onMessage:send] Port exists. Payload: ${JSON.stringify(message.payload)}`); // Use buffered log
-        port.postMessage(message.payload);
-        logToBuffer("[Background:onMessage:send] Sending response { status: 'sent' }"); // Use buffered log
-        sendResponse({ status: "sent" });
-      } catch (e) {
-        const errorMsg = e instanceof Error ? e.message : String(e);
-        logToBuffer(`[Background:onMessage:send] Error posting message: ${errorMsg}`); // Use buffered log
-        sendResponse({ status: "error", message: errorMsg });
-      }
-    } else {
-      logToBuffer("[Background:onMessage:send] Port is null. Sending error."); // Use buffered log
-      sendResponse({ status: "error", message: "Not connected to native host." });
+    console.log(`Connecting to native application: ${NATIVE_APP_NAME}`);
+    // Clear previous error state BEFORE attempting connection
+    lastError = null;
+    connectionStatus = "Connecting...";
+    updatePopupStatus(); // Show Connecting status without old error
+
+    try {
+        nativePort = browser.runtime.connectNative(NATIVE_APP_NAME);
+        connectionStatus = "Connected"; // Assume connected initially, may change on message/disconnect
+
+        nativePort.onMessage.addListener((message: NativeMessage) => {
+            console.log(`Received message from native app: ${JSON.stringify(message)}`);
+
+            // --- BEGIN: Handle commands from native host ---
+            if (message.command) {
+                 console.log(`Handling command from native host: ${message.command}`);
+                 try { // Wrap command handling in try/catch
+                     switch (message.command) {
+                         case 'get_console_logs': {
+                             // TODO: Implement logic to get console logs. Requires debugger API or content script.
+                             // Example placeholder data:
+                             const consoleLogs = [{ level: 'log', message: 'Example log from extension', timestamp: Date.now() }];
+                             console.log("Sending 'console_logs' back to native host");
+                             nativePort?.postMessage({ status: 'console_logs', logs: consoleLogs });
+                             break;
+                         }
+                         case 'get_console_warnings': {
+                             // TODO: Implement logic to get console warnings. Requires debugger API or content script.
+                             const consoleWarnings: any[] = [];
+                             console.log("Sending 'console_warnings' back to native host");
+                             nativePort?.postMessage({ status: 'console_warnings', warnings: consoleWarnings });
+                             break;
+                         }
+                         case 'get_console_errors': {
+                             // TODO: Implement logic to get console errors. Requires debugger API or content script.
+                             const consoleErrors: any[] = [];
+                             console.log("Sending 'console_errors' back to native host");
+                             nativePort?.postMessage({ status: 'console_errors', errors: consoleErrors });
+                             break;
+                         }
+                         case 'get_console_all': {
+                             // TODO: Implement logic to get all console messages. Requires debugger API or content script.
+                             const allConsole = { logs: [{ level: 'log', message: 'Example log', ts: Date.now() }], warnings: [], errors: [] };
+                             console.log("Sending 'console_all' back to native host");
+                             nativePort?.postMessage({ status: 'console_all', data: allConsole });
+                             break;
+                         }
+                         case 'clear_console': {
+                             // TODO: Implement logic to clear the browser console (likely needs debugger API or content script command)
+                             // Note: Standard web extension APIs usually can't clear the devtools console directly.
+                             // This might involve sending a command to a content script that calls console.clear().
+                             console.log("Sending 'console_cleared' confirmation back to native host");
+                             nativePort?.postMessage({ status: 'console_cleared' });
+                             break;
+                         }
+                         case 'get_network_errors': {
+                             // TODO: Implement logic to get network errors (likely needs webRequest API and storage)
+                             // You'll need to listen to webRequest.onErrorOccurred and store the errors.
+                             const networkErrors: any[] = [];
+                             console.log("Sending 'network_errors' back to native host");
+                             nativePort?.postMessage({ status: 'network_errors', errors: networkErrors });
+                             break;
+                         }
+                         case 'get_screenshot': {
+                             // Takes a screenshot of the visible tab. Requires "tabs" permission.
+                             // Omitting the first argument defaults to the active tab in the current window.
+                             browser.tabs.captureVisibleTab({ format: "png" }) // Omitted the first argument (tabId)
+                                 .then(dataUrl => {
+                                     console.log("Sending 'screenshot_data' back to native host");
+                                     nativePort?.postMessage({ status: 'screenshot_data', data: dataUrl });
+                                 })
+                                 .catch(err => {
+                                     console.error("Error taking screenshot:", err);
+                                     // Send an error back to the native host
+                                     nativePort?.postMessage({ status: 'error', command: 'get_screenshot', message: `Screenshot failed: ${err.message}` });
+                                 });
+                             // Response is sent asynchronously in the promise above.
+                             break;
+                         }
+                         case 'get_selected_element': {
+                             // TODO: Implement logic to get selected element (needs content script interaction)
+                             // 1. Send message to active tab's content script requesting selected element.
+                             // 2. Content script listens for selection changes or has a way to get current selection.
+                             // 3. Content script sends response back to background script.
+                             // 4. Background script sends data back to native host.
+                             const selectedElementData = null; // Placeholder
+                             console.log("Sending 'selected_element_data' back to native host (Placeholder)");
+                             nativePort?.postMessage({ status: 'selected_element_data', data: selectedElementData });
+                             break;
+                         }
+                         default:
+                             console.warn(`Received unknown command from native host: ${message.command}`);
+                             // Optionally send an error back for unknown commands
+                             nativePort?.postMessage({ status: 'error', command: message.command, message: `Unknown command: ${message.command}` });
+                     }
+                 } catch (cmdError) {
+                     console.error(`Error handling command '${message.command}':`, cmdError);
+                     // Send a generic error back if command handling fails unexpectedly
+                      nativePort?.postMessage({ status: 'error', command: message.command, message: `Error processing command: ${cmdError instanceof Error ? cmdError.message : String(cmdError)}` });
+                 }
+            }
+            // --- END: Handle commands from native host ---
+
+            // --- BEGIN: Handle status messages from native host ---
+            else if (message.status === "error") {
+                console.error(`Received error status from native app: ${message.message}`);
+                connectionStatus = "Connection Error"; // Set a specific status
+                lastError = message.message || "Unknown error from native host"; // Store the error message
+                updatePopupStatus(); // Send basic status update
+                // Optionally disconnect immediately if an error status means the connection is useless
+                // disconnect();
+            } else if (message.status === "ready") {
+                 connectionStatus = "Connected (Ready)"; // More specific status
+                 lastError = null;
+                 // *** Store components and httpPort when 'ready' is received ***
+                 lastKnownComponents = message.components;
+                 lastKnownHttpPort = message.httpPort;
+                 // *** Pass components and httpPort when sending the 'ready' status update ***
+                 updatePopupStatus(lastKnownComponents, lastKnownHttpPort);
+                 // *** Set connected icon ***
+                 browser.action.setIcon({ path: ICON_CONNECTED }).catch((e: Error) => logToBuffer(`Set icon error on ready: ${e.message}`));
+            } else if (message.status) {
+                 // Handle other potential status messages
+                 connectionStatus = `Connected (Status: ${message.status})`;
+                 updatePopupStatus(); // Send basic status update
+            }
+            // --- END: Handle status messages from native host ---
+
+            // Handle other potential message types without a status field if needed
+            else {
+                 // If it wasn't a command and wasn't a known status, update with basic info
+                 updatePopupStatus();
+            }
+
+            // updatePopupStatus(); // REMOVED: Moved into specific handler cases above
+        });
+
+        console.log("Native port connected.");
+
+    } catch (error) {
+        console.error("Failed to connect native port:", error);
+        lastError = error instanceof Error ? error.message : String(error);
+        connectionStatus = "Failed to connect";
+        nativePort = null; // Ensure port is null on failure
     }
-    return true;
-  }
-
-  logToBuffer(`[Background:onMessage] Unknown command: ${command}`); // Use buffered log
-  return false;
-});
-logToBuffer("[Background] Attached runtime.onMessage listener."); // Use buffered log
-
-// Store icon paths
-const ICON_DEFAULT = "/icons/native-host-control-128.png";
-const ICON_CONNECTED = "/icons/native-host-control-connected-128.png";
-
-// Native Messaging logic
-let port: browser.runtime.Port | null = null; // Use browser.runtime.Port type
-const nativeHostName = "native_message_io_etdofresh";
+    updatePopupStatus();
+}
 
 function disconnect() {
-  logToBuffer("[Background:disconnect] Entered disconnect function."); // Use buffered log
-  if (port) {
-    logToBuffer("[Background:disconnect] Port exists. Disconnecting."); // Use buffered log
-    try {
-      port.disconnect();
-      logToBuffer("[Background:disconnect] port.disconnect() called."); // Use buffered log
+    if (nativePort) {
+        console.log("[Background:disconnect Function] Attempting to disconnect native port."); // Log entry
+        try {
+            nativePort.disconnect();
+            console.log("[Background:disconnect Function] nativePort.disconnect() called successfully."); // Log success
+            
+            // --- Perform cleanup IMMEDIATELY after successful disconnect call --- 
+            nativePort = null;
+            lastKnownComponents = undefined;
+            lastKnownHttpPort = undefined;
+            connectionStatus = "Disconnected"; // Set to normal disconnected
+            lastError = null; // Clear last error on successful disconnect
+            console.log("[Background:disconnect Function] Setting icon to default.");
+            browser.action.setIcon({ path: ICON_DEFAULT }).catch((err: Error) => {
+                console.error(`[Background:disconnect Function] Set icon error after disconnect: ${err.message}`);
+            });
+            console.log("[Background:disconnect Function] Calling updatePopupStatus.");
+            updatePopupStatus(); // Force UI update
+            console.log("[Background:disconnect Function] Cleanup finished.");
+            // --- End Immediate Cleanup ---
 
-      // *** Perform cleanup immediately ***
-      logToBuffer("[Background:disconnect] Immediately resetting icon to default."); // Use buffered log
-      browser.action.setIcon({ path: ICON_DEFAULT })
-        .then(() => {
-          logToBuffer("[Background:disconnect] Immediate setIcon (default) call successful."); // Use buffered log
-        })
-        .catch((err: Error) => {
-          logToBuffer(`[Background:disconnect] Immediate setIcon (default) call FAILED: ${err.message}`); // Use buffered log
-        });
-
-      logToBuffer("[Background:disconnect] Immediately nullifying port variable and status."); // Use buffered log
-      port = null;
-      nativeHostStatus = { isConnected: false, components: {} }; // Reset status HERE
-
-      // *** Notify popup IMMEDIATELY ***
-      logToBuffer("[Background:disconnect] Immediately notifying popup of disconnect.");
-      browser.runtime.sendMessage({ type: "NATIVE_DISCONNECTED", payload: nativeHostStatus }).catch(err => {
-         if (err?.message?.includes("Could not establish connection")) return;
-         logToBuffer(`[Background:disconnect:immediate] Error sending disconnect message: ${err.message}`);
-      });
-      updateTitle(false); // Update title immediately
-
-    } catch (e) {
-        const errorMsg = e instanceof Error ? e.message : String(e);
-        logToBuffer(`[Background:disconnect] Error during port.disconnect(): ${errorMsg}`); // Use buffered log
-        port = null;
-        nativeHostStatus = { isConnected: false, components: {} }; // Reset status
-        browser.action.setIcon({ path: ICON_DEFAULT }).catch((e: Error) => logToBuffer(`Icon reset error after disconnect error: ${e.message}`));
-        // Notify popup of disconnect even after error
-        logToBuffer("[Background:disconnect] Immediately notifying popup after error.");
-        browser.runtime.sendMessage({ type: "NATIVE_DISCONNECTED", payload: nativeHostStatus }).catch(err => {
-           if (err?.message?.includes("Could not establish connection")) return;
-           logToBuffer(`[Background:disconnect:error] Error sending disconnect message: ${err.message}`);
-        });
-        updateTitle(false, "Error"); // Update title after error too
-    }
-  } else {
-    logToBuffer("[Background:disconnect] Port is null. Already disconnected."); // Use buffered log
-  }
-}
-
-async function connect() {
-  logToBuffer("[Background:connect] Entered connect function."); // Use buffered log
-  if (port) {
-    logToBuffer("[Background:connect] Port already exists or connecting. Exiting."); // Use buffered log
-    return;
-  }
-  logToBuffer(`[Background:connect] Attempting browser.runtime.connectNative('${nativeHostName}')`); // Use buffered log
-  try {
-    port = browser.runtime.connectNative(nativeHostName);
-    logToBuffer("[Background:connect] connectNative call successful (port object created)."); // Use buffered log
-
-    logToBuffer("[Background:connect] Attaching port.onMessage listener..."); // Use buffered log
-    port.onMessage.addListener((message: any) => {
-      logToBuffer(`[Background:port.onMessage] Received message from native host: ${JSON.stringify(message)}`); // Use buffered log
-
-      // *** Handle get-logs command ***
-      if (message && message.command === "get-logs") {
-          logToBuffer("[Background:port.onMessage] Received 'get-logs' command. Sending log buffer.");
-          port?.postMessage({
-              status: "logs",
-              logs: consoleLogBuffer, // Send the entire buffer
-          });
-          return; // Don't process this command further below
-      }
-      // *** End handle get-logs command ***
-
-      // Handle other specific messages like 'ready'
-      if (message && message.status === "ready") {
-         logToBuffer("[Background:port.onMessage] Native host ready. Setting connected icon & status."); // Use buffered log
-         nativeHostStatus.isConnected = true;
-         nativeHostStatus.components = message.components || {}; // Store component status
-         browser.action.setIcon({ path: ICON_CONNECTED }).catch((e: Error) => logToBuffer(`Set icon error on ready: ${e.message}`));
-         // Notify popup of new status
-         browser.runtime.sendMessage({ type: "NATIVE_STATUS_UPDATE", payload: nativeHostStatus }).catch(err => {
-            if (err?.message?.includes("Could not establish connection")) return;
-            logToBuffer(`[Background:port.onMessage:ready] Error sending status update to popup: ${err.message}`);
-         });
-         updateTitle(true); // Update title on ready
-      }
-
-      // Forward other messages to popup etc.
-      browser.runtime.sendMessage({ type: "FROM_NATIVE", payload: message }).catch((err: Error) => {
-         if (err?.message?.includes("Could not establish connection")) return;
-         logToBuffer(`[Background:port.onMessage] Error sending message to popup: ${err.message}`); // Use buffered log
-      });
-
-    });
-    logToBuffer("[Background:connect] Attached port.onMessage listener."); // Use buffered log
-
-    logToBuffer("[Background:connect] Attaching port.onDisconnect listener..."); // Use buffered log
-    port.onDisconnect.addListener(() => {
-      logToBuffer("[Background:port.onDisconnect] Listener triggered."); // Use buffered log
-      const disconnectedPort = port;
-      const lastError = browser.runtime.lastError;
-
-      if (lastError) {
-        logToBuffer(`[Background:port.onDisconnect] Disconnected with error: ${lastError.message}`); // Use buffered log
-      } else {
-        logToBuffer("[Background:port.onDisconnect] Disconnected normally."); // Use buffered log
-      }
-
-      if (disconnectedPort) {
-        logToBuffer("[Background:port.onDisconnect] Port reference existed. Proceeding..."); // Use buffered log
-        if (port === disconnectedPort) {
-            logToBuffer(`[Background:port.onDisconnect] Nullifying global port variable.`); // Use buffered log
-            port = null;
-        } else {
-            logToBuffer("[Background:port.onDisconnect] Global port variable was already different or nullified."); // Use buffered log
-        }
-
-        // Clear status on disconnect
-        // nativeHostStatus = { isConnected: false, components: {} }; // Moved to disconnect() for immediate update
-
-        logToBuffer(`[Background:port.onDisconnect] Calling setIcon with ICON_DEFAULT: ${ICON_DEFAULT}`); // Use buffered log
-        browser.action.setIcon({ path: ICON_DEFAULT })
-          .then(() => {
-            logToBuffer("[Background:port.onDisconnect] setIcon (default) call successful."); // Use buffered log
-          })
-          .catch((err: Error) => {
-            logToBuffer(`[Background:port.onDisconnect] setIcon (default) call FAILED: ${err.message}`); // Use buffered log
-          });
-
-        logToBuffer("[Background:port.onDisconnect] Notifying popup."); // Use buffered log
-        // Send message from here ONLY if status wasn't already cleared by disconnect()
-        // This acts as a fallback.
-        if (nativeHostStatus.isConnected) {
-             logToBuffer("[Background:port.onDisconnect] Status was still connected, sending disconnect message as fallback.");
-             nativeHostStatus = { isConnected: false, components: {} }; // Ensure reset before sending
-             browser.runtime.sendMessage({ type: "NATIVE_DISCONNECTED", payload: nativeHostStatus }).catch((err: Error) => {
-                 if (err?.message?.includes("Could not establish connection")) return;
-                 logToBuffer(`[Background:port.onDisconnect:fallback] Error sending disconnect message: ${err.message}`);
+        } catch (e) {
+             console.error("[Background:disconnect Function] Error calling nativePort.disconnect():", e);
+             // If disconnect throws, the listener might not fire. Manually trigger cleanup.
+             nativePort = null;
+             lastKnownComponents = undefined;
+             lastKnownHttpPort = undefined;
+             connectionStatus = "Disconnected (Disconnect Error)";
+             lastError = e instanceof Error ? e.message : String(e);
+             browser.action.setIcon({ path: ICON_DEFAULT }).catch((err: Error) => {
+                 console.error(`[Background:disconnect Function] Set icon error after disconnect error: ${err.message}`);
              });
-        } else {
-             logToBuffer("[Background:port.onDisconnect] Status already disconnected, no message sent from listener.");
+             updatePopupStatus(); // Force UI update
         }
-        updateTitle(false); // Update title on disconnect listener
-
-      } else {
-        logToBuffer("[Background:port.onDisconnect] Port reference was already null when listener triggered. No action taken."); // Use buffered log
-      }
-    });
-    logToBuffer("[Background:connect] Attached port.onDisconnect listener."); // Use buffered log
-
-    logToBuffer("[Background:connect] Native port listeners attached."); // Use buffered log
-
-  } catch (error) {
-    const errorMsg = error instanceof Error ? error.message : String(error);
-    logToBuffer(`[Background:connect] Error during connectNative call ${nativeHostName}: ${errorMsg}`); // Use buffered log
-    port = null;
-    nativeHostStatus = { isConnected: false, components: {} }; // Reset status on connection error
-    logToBuffer("[Background:connect] Resetting icon due to error."); // Use buffered log
-    browser.action.setIcon({ path: ICON_DEFAULT }).catch((e: Error) => logToBuffer(`Icon reset error after connect error: ${e.message}`)); // Use buffered log
-    updateTitle(false, "Error"); // Update title on connect error
-    logToBuffer("[Background:connect] Notifying popup of connection error."); // Use buffered log
-    browser.runtime.sendMessage({ type: "NATIVE_CONNECT_ERROR", error: errorMsg, payload: nativeHostStatus }).catch((err: Error) => {
-       if (err?.message?.includes("Could not establish connection")) return;
-       logToBuffer(`[Background:connect] Error sending connect error message: ${err.message}`); // Use buffered log
-    });
-  }
+        // The onDisconnect listener should ideally handle the rest. // REMOVED Listener
+    } else {
+        console.log("[Background:disconnect Function] Already disconnected.");
+    }
 }
+
+// Listener for messages from the popup or other extension parts
+browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    console.log("Background received message:", message);
+    if (message.command === "toggle") {
+        if (nativePort) {
+            disconnect();
+        } else {
+            connect();
+        }
+        // Respond with the *intended* state after toggle
+        const isConnected = nativePort !== null;
+        let statusText = `Status: ${connectionStatus}`;
+         if (lastError && !isConnected) {
+            statusText += ` (Error: ${lastError})`;
+        }
+        sendResponse({ isConnected: isConnected, statusText: statusText });
+        return true; // Indicate async response
+    } else if (message.command === "getStatus") {
+        const isConnected = nativePort !== null;
+        let statusText = `Status: ${connectionStatus}`;
+        if (lastError && !isConnected) {
+            statusText += ` (Error: ${lastError})`;
+        }
+        // Send back the stored state
+        console.log(`[Background:getStatus] Responding with stored state: isConnected=${isConnected}, components=${JSON.stringify(lastKnownComponents)}, port=${lastKnownHttpPort}`);
+        sendResponse({ 
+            isConnected: isConnected, 
+            statusText: statusText, 
+            components: lastKnownComponents, // Use stored value
+            httpPort: lastKnownHttpPort      // Use stored value
+        });
+        return false; // No async response needed anymore
+    }
+    // Handle other commands if needed
+    return false; // Indicate no async response needed for unhandled commands
+});
+
+// Remove the old browser action listener
+// browser.browserAction.onClicked.addListener(() => { ... });
+
+console.log("Background script loaded for Native Host Control.");
+// Optionally attempt to connect on startup?
+// connect();
 
 // Ensure the icon is default when the script starts
 logToBuffer("[Background] Attaching runtime.onStartup listener..."); // Use buffered log

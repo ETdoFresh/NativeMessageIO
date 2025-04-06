@@ -57,7 +57,7 @@ document.addEventListener('DOMContentLoaded', () => {
     console.log(`[Popup] Main content element acquired: ${!!mainPopupContent}`);
 
     if (toggleButton && statusDiv && iconImage && errorMessageDiv && componentStatusContainer && httpStatusDiv && ipcStatusDiv && mcpStatusDiv && connectedBanner && httpPortDisplay && settingsButton && settingsPanel && apiPortInput && apiPortDisplayLocked && ipcPipeSettingSpan && mcpPortInput && mcpPortDisplayLocked && saveSettingsButton && closeSettingsButton && mainPopupContent) {
-        updateUI(false, 'Checking...'); // Initial state
+        // updateUI(false, 'Checking...'); // REMOVED: Avoid initial incorrect state flash
         toggleButton.addEventListener('click', handleToggleButtonClick);
         console.log("[Popup] Added toggle button listener.");
         settingsButton.addEventListener('click', openSettingsPanel);
@@ -124,15 +124,18 @@ function updateUI(isConnected, status, components, httpPort) {
         componentStatusContainer.classList.remove('status-visible');
         iconImage.src = '/icons/native-host-control-128.png';
 
-        if (status === 'Disconnected') {
+        // Handle status text potentially having "Status: " prefix
+        const cleanStatus = status.startsWith('Status: ') ? status.substring(8) : status;
+
+        if (cleanStatus === 'Disconnected') { // Check against cleaned status
             statusDiv.textContent = 'Disconnected';
             statusDiv.classList.add('status-grey');
             toggleButton.textContent = 'Connect';
             toggleButton.classList.add('status-green'); // Connect is green
-        } else if (status === 'Connecting...' || status === 'Checking...' || status === 'Disconnecting...') {
-            statusDiv.textContent = status;
+        } else if (cleanStatus === 'Connecting...' || cleanStatus === 'Checking...' || cleanStatus === 'Disconnecting...') {
+            statusDiv.textContent = cleanStatus;
             statusDiv.classList.add('status-yellow');
-            toggleButton.textContent = status; // Show status in button
+            toggleButton.textContent = cleanStatus; // Show status in button
             toggleButton.classList.add('status-yellow');
             toggleButton.disabled = true;
         } else { // Error states
@@ -140,7 +143,7 @@ function updateUI(isConnected, status, components, httpPort) {
             statusDiv.classList.add('status-red');
             toggleButton.textContent = 'Connect'; // Allow retry
             toggleButton.classList.add('status-green');
-            if(status) errorMessageDiv.textContent = status;
+            if(status) errorMessageDiv.textContent = status; // Show original full status text in error message
         }
         if (ipcPipeSettingSpan) ipcPipeSettingSpan.textContent = 'N/A';
         httpPortDisplay.textContent = '';
@@ -176,22 +179,29 @@ function updateComponentStatusDiv(div, status) {
 function handleToggleButtonClick() {
     console.log("[Popup] Toggle button clicked.");
     if (toggleButton) {
-        toggleButton.disabled = true; // Prevent double-clicks
+        // Determine if we are currently trying to connect or disconnect
+        const isCurrentlyConnected = toggleButton.textContent === 'Disconnect';
+        const nextStateMsg = isCurrentlyConnected ? 'Disconnecting...' : 'Connecting...';
+
+        toggleButton.disabled = true; // Prevent double-clicks while processing
+        updateUI(false, nextStateMsg); // Show specific intermediate state (Connecting... or Disconnecting...)
+
         console.log("[Popup] Sending toggle command...");
         browser.runtime.sendMessage({ command: "toggle" })
             .then(response => {
-                console.log("[Popup] Toggle response received: ", response);
-                if (response.status === 'connecting') {
-                    updateUI(false, 'Connecting...');
-                } else if (response.status === 'disconnecting') {
-                    updateUI(false, 'Disconnected');
-                }
+                console.log("[Popup] Toggle command processed by background. Waiting for status update message...");
+                // DO NOT update UI here based on this response.
+                // The final UI state will be set by the NATIVE_STATUS_UPDATE message
+                // triggered by the background script's connect/disconnect listeners.
+                // updateUI(response.isConnected, response.statusText, response.components, response.httpPort); // REMOVED
+                // if (toggleButton) toggleButton.disabled = false; // REMOVED - Button stays disabled until final state update
             })
             .catch(error => {
                 const errMsg = `Toggle Error: ${error.message}`;
                 console.error("[Popup] Error sending toggle message:", error);
+                // Show error and allow retry
                 updateUI(false, errMsg);
-                if (toggleButton) toggleButton.disabled = false;
+                if (toggleButton) toggleButton.disabled = false; // Re-enable button ONLY on error
             });
     }
 }
@@ -199,47 +209,49 @@ function handleToggleButtonClick() {
 /** Sends getStatus command to background script */
 function getInitialStatus() {
     console.log("[Popup:getInitialStatus] Entered.");
-    setTimeout(() => {
-         console.log("[Popup:getInitialStatus] Sending getStatus command...");
+    // REMOVED: setTimeout(() => {
+         console.log("[Popup:getInitialStatus] Sending getStatus command immediately...");
          browser.runtime.sendMessage({ command: "getStatus" })
             .then(response => {
                 console.log("[Popup:getInitialStatus] Received response: ", response);
-                if (response.status === 'connected') {
-                    console.log("[Popup:getInitialStatus] Status is connected, calling updateUI.");
-                    updateUI(true, 'Connected', response.components, response.httpPort);
-                } else {
-                    console.log("[Popup:getInitialStatus] Status is disconnected, calling updateUI(false).");
-                    updateUI(false, 'Disconnected');
-                }
+                // Use the full response from background script
+                updateUI(response.isConnected, response.statusText, response.components, response.httpPort);
             })
             .catch(error => {
                 const errMsg = `Get Status Error: ${error.message}`;
                 console.error("[Popup:getInitialStatus] Error getting initial status:", error);
-                updateUI(false, errMsg);
+                updateUI(false, errMsg); // Show error if status fetch fails
             });
-    }, 100);
-    console.log("[Popup:getInitialStatus] setTimeout scheduled.");
+    // }, 100); // REMOVED: Fetch status immediately
+    // console.log("[Popup:getInitialStatus] setTimeout scheduled."); // REMOVED
 }
 
 // Listen for messages FROM background script
 console.log("[Popup] Adding runtime.onMessage listener.");
 browser.runtime.onMessage.addListener((message, sender) => {
     console.log("[Popup:onMessage] Received message: ", message);
-    const currentHttpPort = message.payload?.httpPort;
+    // Extract payload data if available
+    const payload = message.payload;
+    const isConnected = payload?.isConnected;
+    const statusText = payload?.statusText;
+    const components = payload?.components;
+    const httpPort = payload?.httpPort;
 
     if (message.type === "NATIVE_DISCONNECTED") {
         console.log("[Popup:onMessage] Handling disconnect message.");
-        updateUI(false, 'Disconnected', message.payload?.components);
+        updateUI(false, 'Disconnected', components); // Pass components if available
     } else if (message.type === "NATIVE_CONNECT_ERROR") {
         console.log("[Popup:onMessage] Handling connect error message.");
         const errMsg = `Connect Error: ${message.error || 'Unknown'}`;
-        updateUI(false, errMsg, message.payload?.components);
-    } else if (message.type === "FROM_NATIVE" && message.payload?.status === 'ready') {
+        updateUI(false, errMsg, components); // Pass components if available
+    } else if (message.type === "FROM_NATIVE" && payload?.status === 'ready') {
+        // This case might be redundant now if background.ts sends NATIVE_STATUS_UPDATE on ready
         console.log("[Popup:onMessage] Received forwarded 'ready' message. Updating UI.");
-        updateUI(true, 'Connected', message.payload.components, currentHttpPort);
+        updateUI(true, 'Connected', components, httpPort);
     } else if (message.type === "NATIVE_STATUS_UPDATE") {
         console.log("[Popup:onMessage] Received status update. Updating UI.");
-        updateUI(message.payload.isConnected, message.payload.isConnected ? 'Connected' : 'Disconnected', message.payload.components, currentHttpPort);
+        // Use the extracted values, which might include components and httpPort
+        updateUI(isConnected, isConnected ? 'Connected' : statusText, components, httpPort);
     }
 });
 console.log("[Popup] Added runtime.onMessage listener.");
