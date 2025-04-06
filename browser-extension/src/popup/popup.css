@@ -117,4 +117,13 @@ body {
     color: #d9534f; /* Red */
     font-size: 0.9em;
     margin-top: 10px;
+}
+
+/* App Title Style */
+.app-title {
+    color: #ffffff;
+    font-size: 1.1em;
+    font-weight: bold;
+    margin: 0 0 10px 0; /* No top/side margin, space below */
+    text-align: center;
 } 

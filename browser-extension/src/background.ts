@@ -25,8 +25,15 @@ let nativeHostStatus: { isConnected: boolean; components: { [key: string]: strin
 };
 // --- End Status Tracking ---
 
-// Extension interaction logic (popup, options, etc.)
-logToBuffer("[Background] Script top level."); // Use buffered log
+const APP_TITLE = "Native Message IO";
+
+// Function to update title
+function updateTitle(isConnected: boolean, statusText?: string) {
+    const state = isConnected ? "Connected" : (statusText || "Disconnected");
+    browser.action.setTitle({ title: `${APP_TITLE} (${state})` }).catch((e: Error) => {
+        logToBuffer(`[Background:updateTitle] Error setting title: ${e.message}`);
+    });
+}
 
 // Listener for messages FROM POPUP or other extension parts
 logToBuffer("[Background] Attaching runtime.onMessage listener..."); // Use buffered log
@@ -116,6 +123,7 @@ function disconnect() {
          if (err?.message?.includes("Could not establish connection")) return;
          logToBuffer(`[Background:disconnect:immediate] Error sending disconnect message: ${err.message}`);
       });
+      updateTitle(false); // Update title immediately
 
     } catch (e) {
         const errorMsg = e instanceof Error ? e.message : String(e);
@@ -129,6 +137,7 @@ function disconnect() {
            if (err?.message?.includes("Could not establish connection")) return;
            logToBuffer(`[Background:disconnect:error] Error sending disconnect message: ${err.message}`);
         });
+        updateTitle(false, "Error"); // Update title after error too
     }
   } else {
     logToBuffer("[Background:disconnect] Port is null. Already disconnected."); // Use buffered log
@@ -172,6 +181,7 @@ async function connect() {
             if (err?.message?.includes("Could not establish connection")) return;
             logToBuffer(`[Background:port.onMessage:ready] Error sending status update to popup: ${err.message}`);
          });
+         updateTitle(true); // Update title on ready
       }
 
       // Forward other messages to popup etc.
@@ -229,6 +239,7 @@ async function connect() {
         } else {
              logToBuffer("[Background:port.onDisconnect] Status already disconnected, no message sent from listener.");
         }
+        updateTitle(false); // Update title on disconnect listener
 
       } else {
         logToBuffer("[Background:port.onDisconnect] Port reference was already null when listener triggered. No action taken."); // Use buffered log
@@ -245,6 +256,7 @@ async function connect() {
     nativeHostStatus = { isConnected: false, components: {} }; // Reset status on connection error
     logToBuffer("[Background:connect] Resetting icon due to error."); // Use buffered log
     browser.action.setIcon({ path: ICON_DEFAULT }).catch((e: Error) => logToBuffer(`Icon reset error after connect error: ${e.message}`)); // Use buffered log
+    updateTitle(false, "Error"); // Update title on connect error
     logToBuffer("[Background:connect] Notifying popup of connection error."); // Use buffered log
     browser.runtime.sendMessage({ type: "NATIVE_CONNECT_ERROR", error: errorMsg, payload: nativeHostStatus }).catch((err: Error) => {
        if (err?.message?.includes("Could not establish connection")) return;
@@ -256,19 +268,24 @@ async function connect() {
 // Ensure the icon is default when the script starts
 logToBuffer("[Background] Attaching runtime.onStartup listener..."); // Use buffered log
 browser.runtime.onStartup.addListener(() => {
-  logToBuffer("[Background:onStartup] Listener triggered. Setting icon..."); // Use buffered log
+  logToBuffer("[Background:onStartup] Listener triggered. Setting icon & title..."); // Use buffered log
   browser.action.setIcon({ path: ICON_DEFAULT }).catch((e: Error) => logToBuffer(`onStartup setIcon error: ${e.message}`)); // Use buffered log
-  logToBuffer("[Background:onStartup] Icon set."); // Use buffered log
+  updateTitle(false); // Set default title
+  logToBuffer("[Background:onStartup] Icon & title set."); // Use buffered log
 });
 logToBuffer("[Background] Attached runtime.onStartup listener."); // Use buffered log
 
 logToBuffer("[Background] Attaching runtime.onInstalled listener..."); // Use buffered log
 browser.runtime.onInstalled.addListener(() => {
-  logToBuffer("[Background:onInstalled] Listener triggered. Setting icon..."); // Use buffered log
+  logToBuffer("[Background:onInstalled] Listener triggered. Setting icon & title..."); // Use buffered log
   browser.action.setIcon({ path: ICON_DEFAULT }).catch((e: Error) => logToBuffer(`onInstalled setIcon error: ${e.message}`)); // Use buffered log
-  logToBuffer("[Background:onInstalled] Icon set."); // Use buffered log
+  updateTitle(false); // Set default title
+  logToBuffer("[Background:onInstalled] Icon & title set."); // Use buffered log
 });
 logToBuffer("[Background] Attached runtime.onInstalled listener."); // Use buffered log
+
+// Set initial title just in case startup/installed don't fire immediately
+updateTitle(false);
 
 logToBuffer("[Background] Initial connection attempt is DISABLED."); // Use buffered log
 logToBuffer("[Background] Script bottom level reached."); // Use buffered log 
