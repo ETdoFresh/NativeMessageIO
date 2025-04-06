@@ -7,6 +7,9 @@
 </head>
 <body>
     <div class="popup-container">
+        <!-- Settings Icon Button -->
+        <button id="settingsButton" class="settings-button">⚙️</button>
+
         <img id="iconImage" src="/icons/native-host-control-128.png" alt="Icon" class="logo-icon">
 
         <h2 class="app-title">Native Message IO</h2>
@@ -21,13 +24,22 @@
             <!-- Component details shown when connected -->
             <div id="componentStatusContainer" class="component-status-area status-hidden">
                 <div id="httpStatus" class="component-status status-grey">
-                    <span class="status-text-content">API Server</span><span id="httpPortDisplay" class="port-display"></span><span class="status-check"></span>
+                    <span class="status-text-content">API Server</span>
+                    <div class="port-check-group">
+                        <span id="httpPortDisplay" class="port-display"></span><span class="status-check"></span>
+                    </div>
                 </div>
                  <div id="ipcStatus" class="component-status status-grey">
-                    <span class="status-text-content">IPC Server</span><span class="status-check"></span>
+                    <span class="status-text-content">IPC Server</span>
+                    <div class="port-check-group">
+                        <span class="status-check"></span>
+                    </div>
                 </div>
                  <div id="mcpStatus" class="component-status status-grey">
-                    <span class="status-text-content">MCP Server</span><span class="status-check"></span>
+                    <span class="status-text-content">MCP Server</span>
+                    <div class="port-check-group">
+                        <span class="status-check"></span>
+                    </div>
                 </div>
             </div>
 
@@ -38,6 +50,32 @@
             <div id="errorMessage" class="error-message"></div>
         </div>
     </div>
+
+    <!-- Settings Panel -->
+    <div id="settingsPanel" class="settings-panel">
+        <h3>Settings</h3>
+
+        <div class="setting-item">
+            <label for="apiPortSetting">API Server Port:</label>
+            <input type="number" id="apiPortInput" placeholder="e.g., 3580">
+        </div>
+
+        <div class="setting-item">
+            <label for="ipcPipeSetting">IPC Pipe Name:</label>
+            <span id="ipcPipeSetting" class="setting-value"></span>
+        </div>
+
+        <div class="setting-item">
+            <label for="mcpPortInput">MCP SSE Port:</label>
+            <input type="number" id="mcpPortInput" placeholder="e.g., 3581">
+        </div>
+
+        <div class="settings-buttons">
+            <button id="saveSettingsButton" class="button status-green">Save</button>
+            <button id="closeSettingsButton" class="button status-grey">Close</button>
+        </div>
+    </div>
+
     <script src="popup.js"></script>
 </body>
 </html> 

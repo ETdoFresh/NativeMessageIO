@@ -22,5 +22,9 @@
     "default_title": "Native Message IO",
     "default_popup": "dist/popup/popup.html"
   },
-  "permissions": ["nativeMessaging"]
+  "permissions": [
+    "nativeMessaging",
+    "activeTab",
+    "storage"
+  ]
 } 

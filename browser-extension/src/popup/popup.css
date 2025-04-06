@@ -1,6 +1,7 @@
 body {
     font-family: sans-serif;
     width: 250px; /* Adjust width as needed */
+    min-height: 300px; /* Add minimum height */
     padding: 0;
     margin: 0;
     background-color: #1a202c; /* Dark Blue/Grey background */
@@ -53,13 +54,14 @@ body {
     width: 100%;
     box-sizing: border-box;
     display: flex;
-    justify-content: center;
+    justify-content: flex-start; /* Change back to flex-start */
     align-items: center;
-    margin-bottom: 6px; /* Add space below component status indicators */
+    margin-bottom: 6px;
 }
 
+/* Fix for last-child margin removal */
 .component-status:last-child {
-    margin-bottom: 0; /* Remove margin from the last status indicator */
+    margin-bottom: 0;
 }
 
 .status-text { /* Specific override for status text block */
@@ -67,17 +69,32 @@ body {
     margin-bottom: 10px; /* Add specific margin */
 }
 
-/* Style for the checkmark span */
-.status-check {
-    margin-left: 5px; /* Add a little space before the checkmark */
-    display: inline-block; /* Ensure it takes space */
+.component-status .status-text-content {
+    /* flex-grow: 1; */ /* REMOVED */
+    text-align: left;
+    margin-right: auto; /* Push text to left, let group flow after */
+}
+
+/* Group port and checkmark together */
+.port-check-group {
+    display: inline-flex;
+    align-items: center;
+    flex-shrink: 0;
+    margin-left: 10px; /* Add some space between text and group */
 }
 
 /* Style for the port display span */
 .port-display {
-    font-size: 0.8em; /* Smaller font size */
-    color: #ffffff;  /* White color */
-    margin-left: 4px; /* Space before the port */
+    font-size: 0.8em;
+    color: #ffffff;
+    display: inline-block; /* Ensure it takes space */
+    /* No margin needed here, handled by group/flex */
+}
+
+/* Style for the checkmark span */
+.status-check {
+    display: inline-block;
+    margin-left: 3px; /* Small space between port and check */
 }
 
 /* Hide/Show Components Area */
@@ -144,4 +161,99 @@ body {
     font-weight: bold;
     margin: 0 0 10px 0; /* No top/side margin, space below */
     text-align: center;
+}
+
+/* Settings Button Style */
+.settings-button {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    background: none;
+    border: none;
+    font-size: 1.5em; /* Make icon larger */
+    color: #ccc; /* Light grey color */
+    cursor: pointer;
+    padding: 0;
+}
+.settings-button:hover {
+    color: #fff;
+}
+
+/* Settings Panel Style */
+.settings-panel {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background-color: #2d3748; /* Slightly lighter dark background */
+    z-index: 10;
+    padding: 15px;
+    box-sizing: border-box;
+    display: none; /* Hide panel by default */
+    color: #fff;
+}
+.settings-panel h3 {
+    text-align: center;
+    margin-top: 0;
+    margin-bottom: 20px;
+    border-bottom: 1px solid #4a5568;
+    padding-bottom: 10px;
+}
+
+/* Individual Setting Item */
+.setting-item {
+    margin-bottom: 15px;
+    display: flex;
+    align-items: center; /* Align label and value/input vertically */
+}
+.setting-item label {
+    flex-basis: 100px; /* Fixed width for labels */
+    flex-shrink: 0;
+    margin-right: 10px;
+    font-size: 0.9em;
+}
+.setting-item .setting-value {
+    font-weight: bold;
+    color: #cbd5e0; /* Lighter grey for values */
+    font-size: 0.9em;
+}
+.setting-item input[type="number"] {
+    flex-grow: 1;
+    padding: 5px 8px;
+    border: 1px solid #4a5568;
+    border-radius: 4px;
+    background-color: #1a202c;
+    color: #fff;
+    font-size: 0.9em;
+}
+
+/* Settings Panel Buttons */
+.settings-buttons {
+    display: flex;
+    justify-content: space-around;
+    margin-top: auto; /* Push buttons to the bottom */
+    padding-top: 15px; /* Add space above buttons */
+}
+.settings-buttons .button {
+    flex-basis: 45%; /* Make buttons take up space */
+    margin-bottom: 0; /* Override default button margin */
+}
+
+/* Reuse status-hidden for general purposes if needed elsewhere */
+.status-hidden {
+    display: none;
+    opacity: 0;
+}
+
+/* Show settings panel when active */
+.settings-active .settings-panel {
+    display: block; /* Ensure panel shows */
+}
+
+/* Keep rule hiding specific main content */
+.settings-active .popup-container > .logo-icon,
+.settings-active .popup-container > .app-title,
+.settings-active .popup-container > .main-content {
+    display: none; /* Hide main elements when settings are active */
 } 
