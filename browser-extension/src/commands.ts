@@ -4,8 +4,8 @@
 import { logToBuffer, getLastCreatedTabId, setLastCreatedTabId } from './shared-state.js';
 
 // Define the structure for command handlers
-// They receive arguments and the native port to send responses back
-type CommandHandler = (args: any, nativePort: browser.runtime.Port | null) => Promise<any>; // Return data or void
+// They receive arguments parsed by background.ts
+type CommandHandler = (args: CommandMessage, nativePort: browser.runtime.Port | null) => Promise<any>;
 
 const commandRegistry = new Map<string, CommandHandler>();
 
@@ -18,9 +18,18 @@ function registerCommand(commandName: string, handler: CommandHandler) {
     logToBuffer(`[Commands] Command registered: ${commandName}`);
 }
 
-// --- Command Handlers (Extension Side) ---
+// Interface received from background.ts after parsing
+interface CommandMessage {
+    command: string;
+    args?: string; // Arguments as a single string
+    url?: string; // Specific property only reliably set for create_tab by background
+    [key: string]: any;
+}
 
-async function handleGetConsole(args: { command: string }, nativePort: browser.runtime.Port | null) {
+// --- Command Handlers (Updated for args string) ---
+
+// handleGetConsole doesn't use args string, only command name
+async function handleGetConsole(args: CommandMessage, nativePort: browser.runtime.Port | null) {
     const levelFilter = args.command === 'get_console_warnings' ? 'warn'
                       : args.command === 'get_console_errors' ? 'error'
                       : null;
@@ -91,7 +100,8 @@ async function handleGetConsole(args: { command: string }, nativePort: browser.r
     }
 }
 
-async function handleClearConsole(args: { command: string }, nativePort: browser.runtime.Port | null) {
+// handleClearConsole doesn't use args string
+async function handleClearConsole(args: CommandMessage, nativePort: browser.runtime.Port | null) {
      const getTargetTabForClear = async (): Promise<number | undefined> => {
         let currentLastCreatedTabId = getLastCreatedTabId(); // Use imported getter
          if (currentLastCreatedTabId !== undefined) {
@@ -128,7 +138,8 @@ async function handleClearConsole(args: { command: string }, nativePort: browser
      }
 }
 
-async function handleGetScreenshot(args: { command: string }, nativePort: browser.runtime.Port | null) {
+// handleGetScreenshot doesn't use args string
+async function handleGetScreenshot(args: CommandMessage, nativePort: browser.runtime.Port | null) {
      try {
          logToBuffer(`[get_screenshot] Capturing visible tab...`);
          const dataUrl = await browser.tabs.captureVisibleTab({ format: "png" });
@@ -136,13 +147,15 @@ async function handleGetScreenshot(args: { command: string }, nativePort: browse
          nativePort?.postMessage({ status: 'screenshot_data', data: dataUrl });
      } catch (err) {
          logToBuffer(`[get_screenshot] Error: ${err instanceof Error ? err.message : String(err)}`);
-         nativePort?.postMessage({ status: 'error', command: 'get_screenshot', message: `Screenshot failed: ${err instanceof Error ? err.message : String(err)}` });
+         nativePort?.postMessage({ status: 'error', command: 'get_screenshot', message: `Screenshot failed: ${err}` });
      }
 }
 
-async function handleCreateTab(args: { command: string, url?: string }, nativePort: browser.runtime.Port | null) {
-     if (!args.url || typeof args.url !== 'string') {
-         const errorMsg = 'Missing or invalid URL parameter.';
+// handleCreateTab uses the pre-parsed url property set by background.ts
+async function handleCreateTab(args: CommandMessage, nativePort: browser.runtime.Port | null) {
+     // Background.ts specifically parses URL for this command
+     if (!args.url) { // Check url property
+         const errorMsg = 'Missing or invalid URL parameter (expected url property).';
          logToBuffer(`[create_tab] Error: ${errorMsg}`);
          nativePort?.postMessage({ status: 'error', command: 'create_tab', message: errorMsg });
          return;
@@ -152,18 +165,19 @@ async function handleCreateTab(args: { command: string, url?: string }, nativePo
      try {
          const newTab = await browser.tabs.create({ url: targetUrl, active: true });
          if (newTab.id !== undefined) {
-             setLastCreatedTabId(newTab.id); // Use imported setter
+             setLastCreatedTabId(newTab.id);
              logToBuffer(`[create_tab] Stored last created tab ID: ${newTab.id}`);
          }
          logToBuffer(`[create_tab] Success: tab ${newTab.id} for ${targetUrl}`);
          nativePort?.postMessage({ status: 'tab_created', command: 'create_tab', tabId: newTab.id, url: targetUrl });
      } catch (err) {
          logToBuffer(`[create_tab] Error creating tab for ${targetUrl}: ${err instanceof Error ? err.message : String(err)}`);
-         nativePort?.postMessage({ status: 'error', command: 'create_tab', url: targetUrl, message: `Failed to create tab: ${err instanceof Error ? err.message : String(err)}` });
+         nativePort?.postMessage({ status: 'error', command: 'create_tab', url: targetUrl, message: `Failed to create tab: ${err}` });
      }
 }
 
-async function handleReloadExtension(args: { command: string }, nativePort: browser.runtime.Port | null) {
+// handleReloadExtension doesn't use args string
+async function handleReloadExtension(args: CommandMessage, nativePort: browser.runtime.Port | null) {
     logToBuffer("[reload_extension] Received command. Reloading extension...");
     browser.runtime.reload();
 }
@@ -180,13 +194,6 @@ registerCommand('get_screenshot', handleGetScreenshot);
 registerCommand('create_tab', handleCreateTab);
 registerCommand('reload_extension', handleReloadExtension);
 
-
-// Interface for messages passed TO executeCommand (requires command)
-interface CommandMessage {
-    command: string; // Command is required here
-    [key: string]: any;
-}
-
 // Function to execute commands received from the native host
 // Accepts the refined CommandMessage type
 export async function executeCommand(message: CommandMessage, nativePort: browser.runtime.Port | null) {
@@ -197,7 +204,7 @@ export async function executeCommand(message: CommandMessage, nativePort: browse
             await handler(message, nativePort);
         } catch (error) {
             logToBuffer(`[Commands] Critical error executing handler for ${message.command}: ${error instanceof Error ? error.message : String(error)}`);
-            nativePort?.postMessage({ status: 'error', command: message.command, message: `Critical handler error: ${error instanceof Error ? error.message : String(error)}` });
+            nativePort?.postMessage({ status: 'error', command: message.command, message: `Critical handler error: ${error}` });
         }
     } else {
         logToBuffer(`[Commands] Received unknown command: ${message.command}`);

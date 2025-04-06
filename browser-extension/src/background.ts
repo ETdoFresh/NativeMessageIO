@@ -37,10 +37,18 @@ let lastKnownHttpPort: number | undefined = undefined;
 // Store the ID of the tab created by the 'create_tab' command
 let lastCreatedTabId: number | undefined = undefined;
 
-// Keep this interface for messages arriving FROM native host
+// Interface for messages arriving FROM native host
 interface NativeMessage {
-    command?: string; // Command is optional
-    status?: string;
+    rawCommand?: string; // Expecting the raw command string now
+    status?: string;     // Keep status for ready/error messages from host
+    [key: string]: any;
+}
+
+// Interface expected by executeCommand (requires parsed command)
+interface CommandMessage {
+    command: string;
+    args?: string; // Arguments as a single string
+    url?: string; // Specific for create_tab
     [key: string]: any;
 }
 
@@ -86,12 +94,34 @@ function connect() {
         connectionStatus = "Connected";
 
         nativePort.onMessage.addListener((message: NativeMessage) => {
-            logToBuffer(`[Background] Received message from native app: ${JSON.stringify(message)}`);
+             logToBuffer(`[Background] Received message: ${JSON.stringify(message)}`);
 
-             if (message.command) {
-                 executeCommand(message as { command: string; [key: string]: any }, nativePort);
-             }
-             else if (message.status === "error") {
+             if (message.rawCommand) {
+                 // --- Parse the raw command string --- 
+                 const commandString = message.rawCommand.trim();
+                 const parts = commandString.split(/\s+/);
+                 const commandName = parts[0];
+                 const argsString = parts.slice(1).join(' ');
+
+                 if (!commandName) {
+                     logToBuffer(`[Background] Received empty rawCommand.`);
+                     return; // Ignore empty commands
+                 }
+
+                 // Construct the CommandMessage for executeCommand
+                 const commandMessage: CommandMessage = { command: commandName };
+                 if (argsString) {
+                     commandMessage.args = argsString;
+                 }
+                 // Special handling for create_tab URL argument
+                 if (commandName === 'create_tab' && argsString) {
+                     commandMessage.url = argsString; 
+                 }
+
+                 logToBuffer(`[Background] Parsed command: ${commandName}, Args: ${argsString}`);
+                 executeCommand(commandMessage, nativePort);
+
+             } else if (message.status === "error") {
                  logToBuffer(`[Background] Received error status from native app: ${message.message}`);
                  connectionStatus = "Connection Error";
                  lastError = message.message || "Unknown error from native host";
@@ -107,8 +137,7 @@ function connect() {
                  connectionStatus = `Connected (Status: ${message.status})`;
                   logToBuffer(`[Background] Received status: ${message.status}`);
                  updatePopupStatus();
-             }
-             else {
+             } else {
                   logToBuffer(`[Background] Received unhandled message structure: ${JSON.stringify(message)}`);
                   updatePopupStatus();
              }

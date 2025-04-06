@@ -21,7 +21,7 @@ import { HTTP_PORT, SERVER_NAME, SERVER_VERSION } from './config.js';
 import { listenForNativeMessages, writeNativeMessage } from './native-messaging.js';
 import { startHttpServer, stopHttpServer, sendSseEvent } from './api-server.js';
 import { startIpcServer, stopIpcServer } from './ipc-server.js';
-import { setupMcpServer } from './mcp-server.js';
+import { startMcpServer, stopMcpServer } from './mcp-server.js';
 
 // --- Configuration ---
 // const HTTP_PORT = process.env.NATIVE_MESSAGE_IO_PORT || 3580;
@@ -109,116 +109,60 @@ messageEmitter.on('message', (messagePayload: { source: string, data: any }) => 
 });
 
 // --- Server Startup ---
-async function startServer() {
-    logStdErr(`v${SERVER_VERSION} Starting... (PID: ${process.pid})`);
+async function main() {
+    logStdErr(`${SERVER_NAME} v${SERVER_VERSION} Starting... (PID: ${process.pid})`);
 
-    // 1. Start Native Messaging Listener
-    try {
-        listenForNativeMessages();
-        updateComponentStatus('nativeMessaging', 'listening');
-    } catch (e) {
-        logStdErr("Failed to start native messaging listener", e);
-        updateComponentStatus('nativeMessaging', 'error');
-        // Potentially exit if native messaging is critical
-        // process.exit(1);
+    // Start Native Messaging listener first
+    listenForNativeMessages();
+    updateComponentStatus('nativeMessaging', 'listening');
+
+    // Start MCP Server (Readline forwarder mode)
+    startMcpServer(); 
+
+    // Start IPC and HTTP servers in parallel
+    const servers = await Promise.allSettled([
+        startIpcServer(),
+        startHttpServer()
+    ]);
+
+    // Check server startup results
+    if (servers[0].status === 'rejected') {
+        logStdErr('IPC Server failed to start:', servers[0].reason);
+        updateComponentStatus('ipc', `Failed: ${servers[0].reason?.message || 'Unknown error'}`);
+    }
+    if (servers[1].status === 'rejected') {
+        logStdErr('HTTP Server failed to start:', servers[1].reason);
+        updateComponentStatus('http', `Failed: ${servers[1].reason?.message || 'Unknown error'}`);
     }
 
-    // 2. Start MCP Server Part (Needs to be early for potential immediate exit)
-    // setupMcpServer now handles its own status updates and exits on fatal errors.
-    setupMcpServer();
-
-    // 3. Start HTTP and IPC servers concurrently
-    const startupPromises = [
-        startHttpServer(),
-        startIpcServer()
-    ];
-
+    // Send ready signal via Native Messaging
     try {
-        // Wait for both HTTP and IPC server startup attempts to complete.
-        // Note: startIpcServer is designed to resolve even on error to allow startup continuation.
-        // startHttpServer will reject on error.
-        await Promise.all(startupPromises.map(p => p.catch(e => e))); // Catch individual errors
+        const httpAddress = (servers[1].status === 'fulfilled' && servers[1].value) ? servers[1].value.address() : null;
+        const httpPort = (httpAddress && typeof httpAddress === 'object') ? httpAddress.port : undefined;
 
-        logStdErr(`Server startup sequence finished. Status:`, componentStatus);
-
-        // 4. Send ready signal via Native Messaging (if it's working)
-        if (componentStatus.nativeMessaging === "listening") {
-            await writeNativeMessage({
-                status: "ready",
-                pid: process.pid,
-                server: SERVER_NAME,
-                version: SERVER_VERSION,
-                components: componentStatus,
-                httpPort: HTTP_PORT,
-                message: "Server ready signal sent. Check component status."
-            });
-            logStdErr(`Sent ready signal via Native Messaging with component status and HTTP port.`);
-        } else {
-             logStdErr(`Native messaging not available, cannot send ready signal.`);
-        }
-
-    } catch (error) {
-        // This catch might be less likely now unless startHttpServer rejects unhandled
-        logStdErr(`FATAL: Unhandled error during server startup sequence:`, error);
-        // Ensure status reflects failure if possible
-        if (componentStatus.http === 'pending' || componentStatus.http === 'OK') updateComponentStatus('http', 'Error: Unknown startup failure');
-        if (componentStatus.ipc === 'pending' || componentStatus.ipc === 'OK') updateComponentStatus('ipc', 'Error: Unknown startup failure');
-        process.exit(1); // Exit on major unhandled issue in startup orchestration
+        await writeNativeMessage({
+            status: "ready",
+            pid: process.pid,
+            server: SERVER_NAME,
+            version: SERVER_VERSION,
+            components: componentStatus,
+            httpPort: httpPort,
+            message: "Server ready signal sent. Check component status."
+        });
+        logStdErr("Sent ready signal via Native Messaging with component status and HTTP port.");
+    } catch (err) {
+        logStdErr("Error sending ready signal via Native Messaging:", err);
     }
-    logStdErr(`All components initialized or initialization attempted.`);
+
+    logStdErr("All components initialized or initialization attempted.");
 }
 
-// --- Graceful Shutdown ---
-function shutdown(signal: string) {
-    logStdErr(`Received ${signal}. Shutting down...`);
-    messageEmitter.removeAllListeners();
+// Basic process exit logging (no complex shutdown logic for now)
+process.on('SIGINT', () => { logStdErr('Received SIGINT. Exiting...'); process.exit(0); });
+process.on('SIGTERM', () => { logStdErr('Received SIGTERM. Exiting...'); process.exit(0); });
+process.on('exit', (code) => logStdErr(`Exiting with code ${code}.`));
 
-    let httpClosed = false;
-    let ipcClosed = false;
-    const forcedExitTimeout = 5000; // 5 seconds
-
-    const checkExit = () => {
-        if (httpClosed && ipcClosed) {
-            logStdErr(`All servers closed gracefully. Exiting.`);
-            // No need to call cleanupPipe here, stopIpcServer handles it.
-            clearTimeout(forceExitTimer); // Clear timeout once shutdown is successful
-            process.exit(0);
-        }
-    };
-
-    const forceExitTimer = setTimeout(() => {
-        logStdErr(`Shutdown timeout (${forcedExitTimeout}ms) reached. Forcing exit.`);
-        // Ensure IPC cleanup is attempted on forced exit
-        stopIpcServer(() => {}); // Call stopIpcServer to attempt cleanup
-        process.exit(1);
-    }, forcedExitTimeout);
-
-    // Use stop functions from modules
-    stopHttpServer((err) => {
-        if (err) logStdErr('Error stopping HTTP server during shutdown:', err);
-        httpClosed = true;
-        checkExit();
-    });
-
-    stopIpcServer((err) => {
-        if (err) logStdErr('Error stopping IPC server during shutdown:', err);
-        ipcClosed = true;
-        checkExit();
-    });
-
-     // Check exit immediately in case both servers were already stopped/failed
-    checkExit();
-}
-
-process.on('SIGINT', () => shutdown('SIGINT'));
-process.on('SIGTERM', () => shutdown('SIGTERM'));
-process.on('exit', (code) => {
-    logStdErr(`Exiting with code ${code}`);
-    // Cleanup is handled by stopIpcServer now
-});
-
-// Start the server!
-startServer().catch(error => {
-     logStdErr(`Fatal error during top-level startup orchestration:`, error);
-     process.exit(1);
+main().catch(err => {
+    logStdErr("Unhandled error during main execution:", err);
+    process.exit(1);
 }); 

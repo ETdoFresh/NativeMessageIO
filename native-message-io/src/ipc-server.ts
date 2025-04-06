@@ -4,12 +4,10 @@ import { logStdErr } from './utils/logger.js';
 import { updateComponentStatus } from './state.js';
 import { writeNativeMessage } from './native-messaging.js';
 import { PIPE_PATH } from './config.js';
-import { handleIncomingCommandString } from './commands.js';
 
 let ipcServerInstance: net.Server | null = null;
 
 function cleanupPipe() {
-    // Only unlink Unix sockets, Windows Named Pipes don't use filesystem paths this way
     if (process.platform !== 'win32' && fs.existsSync(PIPE_PATH)) {
         try {
             fs.unlinkSync(PIPE_PATH);
@@ -23,13 +21,11 @@ function cleanupPipe() {
 }
 
 export function startIpcServer(): Promise<net.Server | null> {
-    return new Promise((resolve) => { // Modified to always resolve
-        cleanupPipe(); // Remove old socket file if it exists
+    return new Promise((resolve) => {
+        cleanupPipe();
 
         const server = net.createServer((socket) => {
             logStdErr(`IPC Client connected from ${socket.remoteAddress || 'unknown'}`);
-
-            // Buffer to handle partial messages
             let receiveBuffer = '';
 
             socket.on('data', async (data) => {
@@ -37,56 +33,58 @@ export function startIpcServer(): Promise<net.Server | null> {
                 logStdErr(`IPC Socket Raw Data Chunk Received:`, JSON.stringify(rawChunk));
                 receiveBuffer += rawChunk;
                 logStdErr(`IPC Receive Buffer Content:`, JSON.stringify(receiveBuffer));
-
-                // Don't process if the buffer is obviously empty/whitespace
-                if (receiveBuffer.trim().length === 0) {
-                    return;
-                }
+                if (receiveBuffer.trim().length === 0) { return; }
 
                 let requestJson: any;
-                try {
-                    // Attempt to parse the entire buffer.
-                    // If it succeeds, we assume we have one complete JSON message.
-                    requestJson = JSON.parse(receiveBuffer);
+                let responseMessage: string = '[ERROR] Initial error state'; // Default error
+                let commandSuccessfullyForwarded = false;
 
+                try {
+                    requestJson = JSON.parse(receiveBuffer);
                     logStdErr(`IPC Buffer parsed successfully.`);
 
-                    // --- Process the received JSON --- 
-                    let responseMessage: string;
                     if (!requestJson || typeof requestJson.message !== 'string') {
                         logStdErr('Invalid IPC request format. Expected { message: "string" } Got:', receiveBuffer);
                         responseMessage = '[ERROR] Invalid request format. Expected JSON: { "message": "string" }';
                     } else {
                         const commandString: string = requestJson.message;
-                        logStdErr(`Processing IPC command: { "message": "${commandString.substring(0, 100)}..." }`);
-                        responseMessage = await handleIncomingCommandString(commandString);
+                        logStdErr(`Attempting to forward IPC command string: "${commandString.substring(0, 100)}..."`);
+                        
+                        // --- Directly forward the raw command string --- 
+                        try {
+                            await writeNativeMessage({ rawCommand: commandString }); // Send simple object
+                            logStdErr(`Forwarded raw command to extension: ${commandString}`);
+                            responseMessage = `[SUCCESS] Command string forwarded to browser extension.`;
+                            commandSuccessfullyForwarded = true;
+                        } catch (forwardError) {
+                            const errorMessage = forwardError instanceof Error ? forwardError.message : String(forwardError);
+                            logStdErr(`Error forwarding raw command "${commandString}" to extension:`, forwardError);
+                            responseMessage = `[ERROR] Failed to forward command to extension: ${errorMessage}`;
+                        }
                     }
-                    // --- End Processing --- 
-
-                    // Send the response back
-                    try {
-                        // Still sending newline in response for potential client framing needs.
-                        // Can be removed if client also doesn't expect it.
-                        socket.write(JSON.stringify({ message: responseMessage }) + '\n');
-                        logStdErr(`Sent IPC response for command.`);
-                    } catch (writeError) {
-                        logStdErr('Error writing response to IPC socket:', writeError);
-                    }
-
-                    // Clear the buffer assumes one message processed successfully.
-                    receiveBuffer = '';
-                    logStdErr(`IPC Buffer Cleared after successful parse and processing.`);
-
                 } catch (e) {
-                    // JSON.parse failed. Assume incomplete JSON object.
-                    // Log the error and wait for more data.
                     if (e instanceof SyntaxError) {
                          logStdErr(`IPC Buffer content is not yet valid JSON. Waiting for more data...`);
+                         // Don't send response yet, wait for more data
+                         return; 
                     } else {
                          logStdErr(`Error processing IPC buffer (other than JSON parse):`, e);
+                         responseMessage = `[ERROR] Internal server error processing request.`;
                     }
-                    // Do not clear the buffer, wait for the next 'data' event.
                 }
+
+                // Send response back to IPC client
+                try {
+                    socket.write(JSON.stringify({ message: responseMessage }) + '\n');
+                    logStdErr(`Sent IPC response.`);
+                } catch (writeError) {
+                    logStdErr('Error writing response to IPC socket:', writeError);
+                }
+
+                // Clear buffer only if JSON parsing was attempted (success or fail)
+                receiveBuffer = ''; 
+                logStdErr(`IPC Buffer Cleared after processing attempt.`);
+
             });
 
             socket.on('error', (err) => {
@@ -105,19 +103,15 @@ export function startIpcServer(): Promise<net.Server | null> {
             }
             updateComponentStatus('ipc', `Error: ${err.code || err.message}`);
             writeNativeMessage({ status: "error", message: `IPC server error: ${err.message} (Code: ${err.code})` }).catch(logStdErr);
-            ipcServerInstance = null; // Clear instance on error
+            ipcServerInstance = null;
             logStdErr("IPC Server failed to start, allowing main startup to proceed.");
-            resolve(null); // Resolve with null to indicate failure but allow continuation
+            resolve(null);
         });
-
         logStdErr(`Attempting to listen on IPC path: ${PIPE_PATH}`);
-
         server.listen(PIPE_PATH, () => {
             logStdErr(`IPC Server listening successfully on ${PIPE_PATH}`);
-            ipcServerInstance = server; // Assign to module scope variable
+            ipcServerInstance = server;
             updateComponentStatus('ipc', 'OK');
-
-            // Set permissions for Unix sockets
             if (process.platform !== 'win32') {
                 try {
                     fs.chmodSync(PIPE_PATH, '777');
@@ -126,7 +120,7 @@ export function startIpcServer(): Promise<net.Server | null> {
                      logStdErr(`Warning: Could not set permissions for socket file ${PIPE_PATH}:`, chmodErr);
                 }
             }
-            resolve(server); // Resolve with the server instance on success
+            resolve(server);
         });
     });
 }
@@ -141,12 +135,12 @@ export function stopIpcServer(callback: (err?: Error) => void) {
         ipcServerInstance.close((err) => {
             if (err) logStdErr(`Error closing IPC server:`, err);
             else logStdErr(`IPC server closed.`);
-            cleanupPipe(); // Clean up the pipe on close
+            cleanupPipe();
             ipcServerInstance = null;
             callback(err);
         });
     } else {
-        cleanupPipe(); // Ensure cleanup even if server wasn't running
+        cleanupPipe();
         callback();
     }
 } 
