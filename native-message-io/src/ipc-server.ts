@@ -36,60 +36,58 @@ export function startIpcServer(): Promise<net.Server | null> {
                 if (receiveBuffer.trim().length === 0) { return; }
 
                 let requestJson: any;
-                let responseMessage: string = '[ERROR] Initial error state'; // Default error
-                let commandInteractionSuccessful = false; // Renamed for clarity
+                let responseToSend = { status: "error", message: "[ERROR] Initial error state" }; 
 
                 try {
                     requestJson = JSON.parse(receiveBuffer);
                     logStdErr(`IPC Buffer parsed successfully.`);
 
                     if (!requestJson || typeof requestJson.message !== 'string') {
-                        logStdErr('Invalid IPC request format. Expected { message: "string" } Got:', receiveBuffer);
-                        responseMessage = '[ERROR] Invalid request format. Expected JSON: { "message": "string" }';
+                        logStdErr('Invalid IPC request format. Got:', receiveBuffer);
+                        responseToSend = { status: "error", message: "[ERROR] Invalid request format." };
                     } else {
                         const commandString: string = requestJson.message;
-                        logStdErr(`Attempting to interact with extension using command string: "${commandString.substring(0, 100)}..."`);
-
-                        // --- Send command and wait for response from extension ---
+                        logStdErr(`Attempting to interact with extension: "${commandString.substring(0, 100)}..."`);
                         try {
-                            // Use the new function that sends and waits for a response
-                            const extensionResponse = await sendCommandAndWaitForResponse(commandString);
-                            logStdErr(`Received response from extension: ${JSON.stringify(extensionResponse)}`);
-                            // Use the actual response from the extension
-                            // Prepending [SUCCESS] for consistency, adjust as needed
-                            responseMessage = `[SUCCESS] ${JSON.stringify(extensionResponse)}`; 
-                            commandInteractionSuccessful = true; 
+                            const extensionResponseString = await sendCommandAndWaitForResponse(commandString);
+                            logStdErr(`Received response string from extension: ${extensionResponseString}`);
+                            
+                            try {
+                                responseToSend = JSON.parse(extensionResponseString);
+                                if (typeof responseToSend?.status !== 'string' || responseToSend?.message === undefined) {
+                                    logStdErr(`[IPC Server] Warning: Parsed extension response lacks expected status/message structure. Sending anyway.`);
+                                } else {
+                                    logStdErr(`[IPC Server] Parsed extension response successfully.`);
+                                }
+                            } catch (parseError) {
+                                logStdErr(`[IPC Server] Error parsing extension response as JSON: ${parseError}. Response string: ${extensionResponseString}`);
+                                responseToSend = { status: "error", message: "Failed to parse response from browser extension." }; 
+                            }
                         } catch (interactionError) {
                             const errorMessage = interactionError instanceof Error ? interactionError.message : String(interactionError);
-                            logStdErr(`Error during interaction with extension for command "${commandString}":`, interactionError);
-                            // Adjust error message
-                            responseMessage = `[ERROR] Failed interaction with extension: ${errorMessage}`;
+                            logStdErr(`Error during interaction with extension:`, interactionError);
+                            responseToSend = { status: "error", message: `[ERROR] Failed interaction with extension: ${errorMessage}` };
                         }
                     }
                 } catch (e) {
                     if (e instanceof SyntaxError) {
-                         logStdErr(`IPC Buffer content is not yet valid JSON. Waiting for more data...`);
-                         // Don't send response yet, wait for more data
+                         logStdErr(`IPC Buffer content is not yet valid JSON. Waiting...`);
                          return; 
                     } else {
-                         logStdErr(`Error processing IPC buffer (other than JSON parse):`, e);
-                         responseMessage = `[ERROR] Internal server error processing request.`;
+                         logStdErr(`Error processing IPC buffer:`, e);
+                         responseToSend = { status: "error", message: `[ERROR] Internal server error processing request.` };
                     }
                 }
 
-                // Send response back to IPC client
                 try {
-                    // Ensure response is always JSON stringified
-                    socket.write(JSON.stringify({ message: responseMessage }) + '\n'); 
-                    logStdErr(`Sent IPC response.`);
+                    socket.write(JSON.stringify(responseToSend) + '\n'); 
+                    logStdErr(`Sent IPC response: ${JSON.stringify(responseToSend)}`);
                 } catch (writeError) {
                     logStdErr('Error writing response to IPC socket:', writeError);
                 }
 
-                // Clear buffer only if JSON parsing was attempted (success or fail)
                 receiveBuffer = ''; 
                 logStdErr(`IPC Buffer Cleared after processing attempt.`);
-
             });
 
             socket.on('error', (err) => {
@@ -107,7 +105,6 @@ export function startIpcServer(): Promise<net.Server | null> {
                 logStdErr(`IPC Pipe ${PIPE_PATH} is already in use. Ensure no other instance is running or cleanup failed.`);
             }
             updateComponentStatus('ipc', `Error: ${err.code || err.message}`);
-            // Still use writeNativeMessage for status updates if appropriate
             writeNativeMessage({ status: "error", message: `IPC server error: ${err.message} (Code: ${err.code})` }).catch(logStdErr); 
             ipcServerInstance = null;
             logStdErr("IPC Server failed to start, allowing main startup to proceed.");

@@ -120,13 +120,18 @@ export function listenForNativeMessages() {
                                 pendingRequests.delete(messageJson.requestId); // Remove from map
 
                                 if (messageJson.type === 'commandResponse' && messageJson.response !== undefined) {
-                                     logStdErr(`Received response for ID ${messageJson.requestId}. Resolving promise.`);
-                                    pending.resolve(messageJson.response); // Resolve the promise
+                                     logStdErr(`Received response for ID ${messageJson.requestId}. Resolving promise with stringified response.`);
+                                    // Resolve with the STRINGIFIED response object
+                                    pending.resolve(JSON.stringify(messageJson.response)); 
                                 } else if (messageJson.type === 'commandError' && messageJson.error !== undefined) {
                                      logStdErr(`Received error for ID ${messageJson.requestId}. Rejecting promise.`);
-                                    pending.reject(new Error(`Extension error: ${messageJson.error}`)); // Reject the promise
+                                     // Reject with an actual Error object containing the message from the extension's error object
+                                     const errorMsg = (typeof messageJson.error === 'object' && messageJson.error !== null && messageJson.error.message) 
+                                                     ? messageJson.error.message 
+                                                     : (typeof messageJson.error === 'string' ? messageJson.error : 'Unknown extension error');
+                                    pending.reject(new Error(`Extension error: ${errorMsg}`));
                                 } else {
-                                     logStdErr(`Received message for ID ${messageJson.requestId} but missing 'response' or 'error' field, or wrong type. Rejecting.`);
+                                     logStdErr(`Received message for ID ${messageJson.requestId} but invalid format. Rejecting.`);
                                     pending.reject(new Error(`Invalid response format from extension for request ID ${messageJson.requestId}`));
                                 }
                             }

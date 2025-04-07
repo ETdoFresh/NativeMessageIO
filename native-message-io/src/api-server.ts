@@ -43,40 +43,45 @@ app.post('/command', async (req, res) => {
     logStdErr('[API Server] Received POST /command:', commandObject);
 
     if (!commandObject || typeof commandObject.message !== 'string') {
-        logStdErr('[API Server] Invalid command format. Expected { message: "string" }');
-        return res.status(400).json({ error: 'Invalid command format. Expected JSON { "message": "string" }' });
+        logStdErr('[API Server] Invalid command format.');
+        return res.status(400).json({ status: "error", message: 'Invalid command format. Expected JSON { "message": "string" }' });
     }
     const commandString = commandObject.message;
-    // Use a more structured response format
     let responsePayload: object; 
     let httpStatus = 500; // Default to internal server error
 
     try {
-        logStdErr(`[API Server] Attempting interaction with extension using command: "${commandString.substring(0, 100)}..."`);
-        // Use sendCommandAndWaitForResponse
-        const extensionResponse = await sendCommandAndWaitForResponse(commandString); 
-        logStdErr(`[API Server] Received response from extension: ${JSON.stringify(extensionResponse)}`);
+        logStdErr(`[API Server] Sending command to extension: "${commandString.substring(0, 100)}..."`);
+        const extensionResponseString = await sendCommandAndWaitForResponse(commandString); 
+        logStdErr(`[API Server] Received response string from extension: ${extensionResponseString}`);
         
-        // Try to parse the extension response as JSON, otherwise use as string
-        let responseData: any;
+        // Try parsing the response string (expecting { status, message } format)
         try {
-            responseData = JSON.parse(extensionResponse);
-        } catch (parseErr) {
-             logStdErr(`[API Server] Extension response was not valid JSON, returning as string.`);
-             responseData = extensionResponse; // Use the raw string response
+            responsePayload = JSON.parse(extensionResponseString);
+            // Basic validation of the expected structure
+            if (typeof (responsePayload as any)?.status !== 'string' || (responsePayload as any)?.message === undefined) {
+                 logStdErr(`[API Server] Warning: Parsed extension response lacks expected status/message structure. Response: ${extensionResponseString}`);
+                 // Return the potentially malformed object anyway, but set status to 200 as interaction succeeded
+                 httpStatus = 200;
+            } else {
+                // Successfully parsed into expected format
+                httpStatus = (responsePayload as any).status === 'error' ? 500 : 200; // Use 500 for extension errors, 200 otherwise
+                logStdErr(`[API Server] Parsed extension response successfully. Status: ${httpStatus}`);
+            }
+        } catch (parseError) {
+             logStdErr(`[API Server] Error parsing extension response as JSON: ${parseError}. Returning as error.`);
+             // Treat unparsable response as an error
+             responsePayload = { status: "error", message: `Extension response was not valid JSON: ${extensionResponseString}` }; 
+             httpStatus = 500;
         }
-        
-        responsePayload = { success: true, response: responseData };
-        httpStatus = 200; // OK
     } catch (interactionError) {
         const errorMessage = interactionError instanceof Error ? interactionError.message : String(interactionError);
         logStdErr(`[API Server] Error during interaction with extension for command "${commandString}":`, interactionError);
-        responsePayload = { success: false, error: `Failed interaction with extension: ${errorMessage}` };
-        // Keep httpStatus as 500 for interaction errors
+        responsePayload = { status: "error", message: `Failed interaction with extension: ${errorMessage}` }; 
         httpStatus = 500; 
     }
 
-    // Send response back to HTTP client
+    // Send the final payload (directly parsed from extension or error object)
     res.status(httpStatus).json(responsePayload);
 });
 
