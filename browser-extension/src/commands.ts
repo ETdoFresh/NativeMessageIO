@@ -262,6 +262,52 @@ async function handleHelp(args: CommandMessage, nativePort: browser.runtime.Port
     }
 }
 
+// handleSwitchToTab command
+async function handleSwitchToTab(args: CommandMessage, nativePort: browser.runtime.Port | null, requestId?: string) {
+    const commandName = 'switch_to_tab';
+    logToBuffer(`[${commandName}] Received request (ReqID: ${requestId || 'N/A'}). Args: ${args.args}`);
+
+    const tabIdStr = args.args?.trim();
+    if (!tabIdStr) {
+        sendErrorResponse(nativePort, requestId, commandName, "Missing tab_id argument.");
+        return;
+    }
+
+    const tabId = parseInt(tabIdStr, 10);
+    if (isNaN(tabId)) {
+        sendErrorResponse(nativePort, requestId, commandName, `Invalid tab_id: "${tabIdStr}". Must be a number.`);
+        return;
+    }
+
+    try {
+        // First, get the tab info to find its window
+        const tab = await browser.tabs.get(tabId);
+
+        // Check if windowId is valid before trying to update the window
+        if (tab.windowId === undefined) {
+            throw new Error(`Could not find window ID for tab ${tabId}.`);
+        }
+
+        // Focus the window the tab is in
+        await browser.windows.update(tab.windowId, { focused: true });
+
+        // Activate the tab within its window
+        await browser.tabs.update(tabId, { active: true });
+
+        logToBuffer(`[${commandName}] Successfully switched to tab ${tabId}.`);
+        sendSuccessResponse(nativePort, requestId, `Switched to tab ${tabId}`);
+    } catch (err) {
+        const errorMessage = err instanceof Error ? err.message : String(err);
+        logToBuffer(`[${commandName}] Error: ${errorMessage}`);
+        // Check if the error is due to an invalid tab ID
+        if (errorMessage.toLowerCase().includes("invalid tab id") || errorMessage.toLowerCase().includes("no tab with id")) {
+            sendErrorResponse(nativePort, requestId, commandName, `Tab with ID ${tabId} not found.`);
+        } else {
+            sendErrorResponse(nativePort, requestId, commandName, `Failed to switch to tab ${tabId}: ${errorMessage}`);
+        }
+    }
+}
+
 // TODO: Add handlers for get_network_errors, get_selected_element if needed
 
 // Register the handlers
@@ -274,6 +320,7 @@ registerCommand('get_screenshot', handleGetScreenshot);
 registerCommand('create_tab', handleCreateTab);
 registerCommand('reload_extension', handleReloadExtension);
 registerCommand('help', handleHelp);
+registerCommand('switch_to_tab', handleSwitchToTab);
 
 // Function to execute commands received
 // Now accepts optional requestId
