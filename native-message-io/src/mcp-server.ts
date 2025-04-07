@@ -1,6 +1,6 @@
 import { logStdErr } from './utils/logger.js';
 import { updateComponentStatus } from './state.js';
-import { writeNativeMessage } from './native-messaging.js';
+import { writeNativeMessage, sendCommandAndWaitForResponse } from './native-messaging.js';
 import readline from 'readline';
 
 // TODO: Restore MCP Server functionality
@@ -97,25 +97,35 @@ export function getMcpServerInstance(): McpServer | null {
 }
 */
 
-// --- Forwarding Logic (For Readline Interface) ---
+// --- Forwarding Logic (Modified for Request/Response) ---
+// Interface for parsing (remains the same, but less critical now)
 interface ExtensionMessage { command: string; url?: string; args?: any; }
-async function forwardCommandStringToExtension(commandString: string): Promise<string> {
-    logStdErr(`[MCP Forwarder] Forwarding: "${commandString}"`);
-    const parts = commandString.trim().split(/\s+/);
-    const commandName = parts[0];
-    const argsString = parts.slice(1).join(' ');
-    if (!commandName) { return `[ERROR] Empty command string.`; }
-    const message: ExtensionMessage = { command: commandName };
-    if (commandName === 'create_tab' && argsString) { message.url = argsString; }
-    else if (argsString) { message.args = argsString; }
+
+/**
+ * Sends a command string to the extension via Native Messaging and waits for a response.
+ * @param commandString The raw command string received from the MCP client (readline).
+ * @returns A promise that resolves with the extension's response string or rejects on error/timeout.
+ */
+async function forwardCommandAndWait(commandString: string): Promise<string> {
+    if (!commandString || commandString.trim().length === 0) {
+         return `[ERROR] Empty command string received.`;
+    }
+    logStdErr(`[MCP Server] Processing command: \"${commandString}\"`);
+
     try {
-        await writeNativeMessage(message);
-        logStdErr(`[MCP Forwarder] Forwarded message: ${JSON.stringify(message)}`);
-        return `[SUCCESS] Command "${commandName}" forwarded to extension.`;
-    } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : String(error);
-        logStdErr(`[MCP Forwarder] Error forwarding:`, error);
-        return `[ERROR] Failed to forward command: ${errorMessage}`;
+        // Use the function that waits for a response
+        const extensionResponse = await sendCommandAndWaitForResponse(commandString); 
+        logStdErr(`[MCP Server] Received response from extension: ${JSON.stringify(extensionResponse)}`);
+        
+        // Return the raw response string from the extension
+        // Let the MCP client parse/handle it as needed
+        return extensionResponse; 
+        
+    } catch (interactionError) {
+        const errorMessage = interactionError instanceof Error ? interactionError.message : String(interactionError);
+        logStdErr(`[MCP Server] Error during interaction with extension for command "${commandString}":`, interactionError);
+        // Return a formatted error string for the MCP client
+        return `[ERROR] Failed interaction with extension: ${errorMessage}`; 
     }
 }
 // --- END Forwarding Logic ---
@@ -129,30 +139,36 @@ export function startMcpServer() {
     rl = readline.createInterface({
         input: process.stdin,
         output: process.stdout,
-        terminal: false
+        terminal: false // Important for non-interactive use
     });
 
     rl.on('line', async (line) => {
         const commandString = line.trim();
-        if (!commandString) return;
-        logStdErr(`[MCP Server] Received command line: "${commandString}"`);
+        if (!commandString) return; // Ignore empty lines
+        logStdErr(`[MCP Server] Received line: \"${commandString}\"`);
+        
         let result: string;
         try {
-            result = await forwardCommandStringToExtension(commandString);
-            logStdErr(`[MCP Server] Forwarding processed. Result: ${result}`);
+            // Call the updated function that waits
+            result = await forwardCommandAndWait(commandString); 
+            logStdErr(`[MCP Server] Sending response to stdout: ${result}`);
         } catch (error) {
+            // Catch unexpected errors *calling* forwardCommandAndWait, though it should handle internal errors
             const errorMessage = error instanceof Error ? error.message : String(error);
-            logStdErr(`[MCP Server] Critical error during forwarding call:`, error);
+            logStdErr(`[MCP Server] Critical error calling forwardCommandAndWait:`, error);
             result = `[ERROR] ${errorMessage}`;
         }
-        process.stdout.write(result + '\n');
+        // Write the result (either success response or error string) followed by a newline
+        process.stdout.write(result + '\n'); 
     });
 
      rl.on('close', () => {
         logStdErr('[MCP Server] Readline interface closed (stdin ended).');
         updateComponentStatus('mcp', 'Stopped');
+        // Use writeNativeMessage for status updates if connection might still exist
         writeNativeMessage({ status: "info", component: "mcp", message: "MCP server stdin closed." }).catch(logStdErr);
       });
+      
      rl.on('error', (err) => {
          logStdErr(`[MCP Server] Readline Error:`, err);
          updateComponentStatus('mcp', `Error: Readline ${err.message}`);
@@ -164,7 +180,7 @@ export function stopMcpServer() {
     if (rl) {
         logStdErr('[MCP Server] Closing readline interface...');
         rl.close();
-        rl = null;
+        rl = null; // Important to prevent further operations
         updateComponentStatus('mcp', 'Stopped');
         logStdErr('[MCP Server] Readline interface closed.');
     }

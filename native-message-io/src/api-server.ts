@@ -4,7 +4,7 @@ import cors from 'cors';
 import { logStdErr } from './utils/logger.js';
 import { HTTP_PORT } from './config.js';
 import { updateComponentStatus } from './state.js';
-import { writeNativeMessage } from './native-messaging.js';
+import { writeNativeMessage, sendCommandAndWaitForResponse } from './native-messaging.js';
 
 let httpServerInstance: http.Server | null = null;
 
@@ -37,7 +37,7 @@ app.get('/events', (req: Request, res: Response) => {
     });
 });
 
-// POST /command
+// POST /command (Modified)
 app.post('/command', async (req, res) => {
     const commandObject = req.body;
     logStdErr('[API Server] Received POST /command:', commandObject);
@@ -47,25 +47,37 @@ app.post('/command', async (req, res) => {
         return res.status(400).json({ error: 'Invalid command format. Expected JSON { "message": "string" }' });
     }
     const commandString = commandObject.message;
-    let responseMessage: string;
-    let httpStatus = 500;
+    // Use a more structured response format
+    let responsePayload: object; 
+    let httpStatus = 500; // Default to internal server error
 
     try {
-        // --- Directly forward the raw command string --- 
-        await writeNativeMessage({ rawCommand: commandString });
-        logStdErr(`Forwarded raw command to extension: ${commandString}`);
-        responseMessage = `[SUCCESS] Command string forwarded to browser extension.`;
-        httpStatus = 200; // Indicate success (forwarding attempted)
-    } catch (forwardError) {
-        const errorMessage = forwardError instanceof Error ? forwardError.message : String(forwardError);
-        logStdErr(`Error forwarding raw command "${commandString}" to extension:`, forwardError);
-        responseMessage = `[ERROR] Failed to forward command to extension: ${errorMessage}`;
-        httpStatus = 500; // Internal server error
+        logStdErr(`[API Server] Attempting interaction with extension using command: "${commandString.substring(0, 100)}..."`);
+        // Use sendCommandAndWaitForResponse
+        const extensionResponse = await sendCommandAndWaitForResponse(commandString); 
+        logStdErr(`[API Server] Received response from extension: ${JSON.stringify(extensionResponse)}`);
+        
+        // Try to parse the extension response as JSON, otherwise use as string
+        let responseData: any;
+        try {
+            responseData = JSON.parse(extensionResponse);
+        } catch (parseErr) {
+             logStdErr(`[API Server] Extension response was not valid JSON, returning as string.`);
+             responseData = extensionResponse; // Use the raw string response
+        }
+        
+        responsePayload = { success: true, response: responseData };
+        httpStatus = 200; // OK
+    } catch (interactionError) {
+        const errorMessage = interactionError instanceof Error ? interactionError.message : String(interactionError);
+        logStdErr(`[API Server] Error during interaction with extension for command "${commandString}":`, interactionError);
+        responsePayload = { success: false, error: `Failed interaction with extension: ${errorMessage}` };
+        // Keep httpStatus as 500 for interaction errors
+        httpStatus = 500; 
     }
 
     // Send response back to HTTP client
-    res.status(httpStatus).json({ message: responseMessage });
-
+    res.status(httpStatus).json(responsePayload);
 });
 
 // GET /status (Simple HTTP status, not the native host status command)
@@ -85,13 +97,14 @@ export function startHttpServer(): Promise<http.Server | null> {
             logStdErr(`FATAL: Express server error:`, err);
             const errMsg = (err && 'code' in err) ? err.code : err.message;
             updateComponentStatus('http', `Error: ${errMsg}`);
-            writeNativeMessage({ status: "error", message: `HTTP server error: ${err.message}` }).catch(logStdErr);
+            // Avoid sending native message if native messaging might not be ready/failed
+            // writeNativeMessage({ status: "error", message: `HTTP server error: ${err.message}` }).catch(logStdErr);
             if (err.code === 'EADDRINUSE') {
                 logStdErr(`*** Port ${HTTP_PORT} is already in use. Try setting NATIVE_MESSAGE_IO_PORT environment variable. ***`);
-                writeNativeMessage({ status: "error", message: `Port ${HTTP_PORT} in use.` }).catch(logStdErr);
+                // writeNativeMessage({ status: "error", message: `Port ${HTTP_PORT} in use.` }).catch(logStdErr);
             }
             httpServerInstance = null;
-            reject(err); // Reject the promise on startup error
+            reject(err); 
         });
     });
 }
