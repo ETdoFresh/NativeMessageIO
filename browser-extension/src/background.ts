@@ -18,6 +18,8 @@ interface ComponentStatus { // Re-enabled
 
 // --- Constants ---
 const NATIVE_HOST_NAME = "native_message_io_etdofresh";
+const ICON_ONLINE = "icons/native-host-control-connected-128.png";
+const ICON_OFFLINE = "icons/native-host-control-128.png";
 
 // --- Global State ---
 let isConnected: boolean = false;
@@ -35,25 +37,33 @@ log("[Background] Script loading...");
 // ---- Native Messaging Port Management ----
 let nativePort: browser.runtime.Port | null = null;
 
+// --- Utility to set icon based on status ---
+function updateActionIcon(connected: boolean): void {
+    const path = connected ? ICON_ONLINE : ICON_OFFLINE;
+    browser.action.setIcon({ path: path })
+        .then(() => log(`[Background] Action icon set to ${path}`))
+        .catch(err => log(`[Background] Error setting action icon: ${err.message}`));
+}
+
 function connectNative(): void {
     if (nativePort) {
         log("[Background] connectNative: Already connected or connecting.");
-        return; // Avoid multiple connections
+        return;
     }
     log(`[Background] Connecting to native application: ${NATIVE_HOST_NAME}`);
-    sendPopupUpdate(false, "Status: Connecting..."); // Update popup early
+    sendPopupUpdate(false, "Status: Connecting...");
+    updateActionIcon(false); // Set offline icon immediately
     try {
         nativePort = browser.runtime.connectNative(NATIVE_HOST_NAME);
         log("[Background] Native port connection initiated.");
-
         nativePort.onMessage.addListener(onNativeMessage);
         nativePort.onDisconnect.addListener(onNativeDisconnect);
         log("[Background] onDisconnect listener ATTACHED.");
-
     } catch (error) {
         log(`[Background] Error connecting to native application: ${error instanceof Error ? error.message : String(error)}`);
-        nativePort = null; // Ensure port is null on error
+        nativePort = null;
         sendPopupUpdate(false, `Status: Error - ${error instanceof Error ? error.message : String(error)}`);
+        updateActionIcon(false); // Ensure offline icon on error
     }
 }
 
@@ -65,26 +75,23 @@ function disconnectNative(): void {
             nativePort.disconnect();
             log('[Background] nativePort.disconnect() called.');
         } catch (e) {
-            // Log error if disconnect fails, though it might be expected if already closed
             log(`[Background] Error calling nativePort.disconnect(): ${e instanceof Error ? e.message : String(e)}`);
         }
-
-        // --- Immediate Cleanup and UI Update (since onDisconnect might not fire reliably) ---
         log('[Background] Performing immediate cleanup after disconnect call...');
-        nativePort = null; // Clean up the reference immediately
+        nativePort = null;
         isConnected = false;
-        componentStatus = undefined; // Reset state
-        httpPort = undefined; // Reset state
+        componentStatus = undefined;
+        httpPort = undefined;
         sendPopupUpdate(false, "Status: Disconnected");
+        updateActionIcon(false); // Set offline icon on disconnect
         log('[Background] Immediate cleanup and UI update complete.');
-        // --------------------------------------------------------------------------------
-
     } else {
         log('[Background] disconnectNative: No active connection found.');
-        // Ensure UI is updated even if port was already null/disconnected previously
-        if (!isConnected) { // Only send update if not already marked as disconnected
-             sendPopupUpdate(false, "Status: Disconnected");
+        if (isConnected) { // Send update only if state was previously connected
+            sendPopupUpdate(false, "Status: Disconnected");
+            updateActionIcon(false); // Ensure offline icon if state was inconsistent
         }
+        // If already disconnected (!isConnected), icon should already be offline
     }
 }
 
@@ -96,34 +103,30 @@ function onNativeMessage(message: any): void {
     if (message && message.status === 'ready') {
         log("[Background] Received 'ready' signal from native host.");
         isConnected = true;
-        // Safely assign components and port to global state
-        componentStatus = message.components || {}; // Ensure it's an object
-        httpPort = message.httpPort; // Assign port
+        componentStatus = message.components || {};
+        httpPort = message.httpPort;
         log(`[Background] Stored state: Components: ${JSON.stringify(componentStatus)}, HTTP Port: ${httpPort}`);
-        // Send full update using stored state
         sendPopupUpdate(true, "Status: Connected", componentStatus, httpPort);
+        updateActionIcon(true); // Set online icon
 
     } else if (message && message.type === 'commandWithResponse' && typeof message.requestId === 'string' && typeof message.payload === 'string') {
         log(`[Background] Received commandWithResponse (ID: ${message.requestId}): ${message.payload}`);
-        const { command, args, url } = parseCommandString(message.payload); // Parse payload
+        const { command, args, url } = parseCommandString(message.payload);
         if (command) {
-            const commandMessage = { command, args, url }; // Construct CommandMessage
-             // Execute command, passing the requestId
-             executeCommand(commandMessage, nativePort, message.requestId)
-                 .catch(err => {
-                     log(`[Background] Uncaught error executing commandWithResponse handler for '${command}': ${err instanceof Error ? err.message : String(err)}`);
-                     // Attempt to send an error back via the request ID if possible
-                     if (nativePort && message.requestId) {
-                          try {
-                              nativePort.postMessage({ type: 'commandError', requestId: message.requestId, error: `Critical error processing command: ${err instanceof Error ? err.message : String(err)}` });
-                          } catch (sendErr) {
-                              log(`[Background] Failed to send critical error response for ${message.requestId}: ${sendErr}`);
-                          }
-                     }
-                 });
+            const commandMessage = { command, args, url };
+            executeCommand(commandMessage, nativePort, message.requestId)
+                .catch(err => {
+                    log(`[Background] Uncaught error executing commandWithResponse handler for '${command}': ${err instanceof Error ? err.message : String(err)}`);
+                    if (nativePort && message.requestId) {
+                         try {
+                             nativePort.postMessage({ type: 'commandError', requestId: message.requestId, error: `Critical error processing command: ${err instanceof Error ? err.message : String(err)}` });
+                         } catch (sendErr) {
+                             log(`[Background] Failed to send critical error response for ${message.requestId}: ${sendErr}`);
+                         }
+                    }
+                });
         } else {
             log(`[Background] Failed to parse command from commandWithResponse payload: ${message.payload}`);
-            // Send error back if possible
             if (nativePort && message.requestId) {
                  try {
                      nativePort.postMessage({ type: 'commandError', requestId: message.requestId, error: `Failed to parse command payload: ${message.payload}` });
@@ -134,44 +137,33 @@ function onNativeMessage(message: any): void {
         }
 
     } else if (message && message.status) {
-        log(`[Background] Received status update or command result: ${message.status}`);
-        // Forward known simple results/errors to popup
+        log(`[Background] Received status message (potentially deprecated): ${message.status}`);
         if (message.status === 'error') {
              browser.runtime.sendMessage({ type: 'NATIVE_ERROR', payload: message })
                  .catch(err => log(`[Background] Error sending NATIVE_ERROR to popup: ${err.message}`));
-        } else if (message.status.startsWith('console_') || message.status === 'screenshot_data' || message.status === 'console_cleared' || message.status === 'tab_created') {
-             const messageType = message.status.startsWith('console_') || message.status === 'console_cleared' ? 'CONSOLE_RESULT' : 'NATIVE_DATA';
-             browser.runtime.sendMessage({ type: messageType, payload: message })
-                 .catch(err => log(`[Background] Error sending ${messageType} to popup: ${err.message}`));
-        } else {
-             // Log other statuses, maybe forward if known safe?
-              log(`[Background] Received unforwarded status '${message.status}' from native host.`);
         }
-
     } else {
-        log(`[Background] Received unknown/unstructured message: ${JSON.stringify(message)}`);
+        log(`[Background] Received unknown/unstructured message (no status or commandWithResponse type): ${JSON.stringify(message)}`);
     }
 }
 
 function onNativeDisconnect(port: browser.runtime.Port): void {
     log("!!!!!! [Background] onNativeDisconnect ENTERED !!!!!!");
-
-    // Check if cleanup was already done by disconnectNative()
     if (nativePort === null && !isConnected) {
         log('[Background] onNativeDisconnect: Cleanup already performed by disconnectNative. Skipping.');
         return;
     }
-
     log(`[Background] Native port disconnected unexpectedly or with delay.`);
     if (port.error) {
         log(`[Background] Disconnect reason: ${port.error.message}`);
     }
-    nativePort = null; // Ensure null
+    nativePort = null;
     isConnected = false;
-    componentStatus = undefined; // Reset state
-    httpPort = undefined; // Reset state
+    componentStatus = undefined;
+    httpPort = undefined;
     const statusText = port.error ? `Status: Error - ${port.error.message}` : "Status: Disconnected (Unexpected)";
     sendPopupUpdate(false, statusText);
+    updateActionIcon(false); // Set offline icon on unexpected disconnect
     log("[Background] onNativeDisconnect completed (unexpected disconnect path).");
 }
 
@@ -294,5 +286,7 @@ function sendPopupUpdate(connected: boolean, status: string, currentComponents?:
 // --- Initialization ---
 
 browser.runtime.onMessage.addListener(handleRuntimeMessage);
+// Set initial icon state (offline)
+updateActionIcon(false); 
 log("[Background] Runtime message listener added.");
 log("[Background] Script initialized.");
