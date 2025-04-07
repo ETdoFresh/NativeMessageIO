@@ -103,6 +103,36 @@ function onNativeMessage(message: any): void {
         // Send full update using stored state
         sendPopupUpdate(true, "Status: Connected", componentStatus, httpPort);
 
+    } else if (message && message.type === 'commandWithResponse' && typeof message.requestId === 'string' && typeof message.payload === 'string') {
+        log(`[Background] Received commandWithResponse (ID: ${message.requestId}): ${message.payload}`);
+        const { command, args, url } = parseCommandString(message.payload); // Parse payload
+        if (command) {
+            const commandMessage = { command, args, url }; // Construct CommandMessage
+             // Execute command, passing the requestId
+             executeCommand(commandMessage, nativePort, message.requestId)
+                 .catch(err => {
+                     log(`[Background] Uncaught error executing commandWithResponse handler for '${command}': ${err instanceof Error ? err.message : String(err)}`);
+                     // Attempt to send an error back via the request ID if possible
+                     if (nativePort && message.requestId) {
+                          try {
+                              nativePort.postMessage({ type: 'commandError', requestId: message.requestId, error: `Critical error processing command: ${err instanceof Error ? err.message : String(err)}` });
+                          } catch (sendErr) {
+                              log(`[Background] Failed to send critical error response for ${message.requestId}: ${sendErr}`);
+                          }
+                     }
+                 });
+        } else {
+            log(`[Background] Failed to parse command from commandWithResponse payload: ${message.payload}`);
+            // Send error back if possible
+            if (nativePort && message.requestId) {
+                 try {
+                     nativePort.postMessage({ type: 'commandError', requestId: message.requestId, error: `Failed to parse command payload: ${message.payload}` });
+                 } catch (sendErr) {
+                     log(`[Background] Failed to send parse error response for ${message.requestId}: ${sendErr}`);
+                 }
+            }
+        }
+
     } else if (message && message.status) {
         log(`[Background] Received status update or command result: ${message.status}`);
         // Forward known simple results/errors to popup
@@ -197,6 +227,31 @@ function handleRuntimeMessage(message: CommandMessage, sender: browser.runtime.M
 }
 
 // --- Utilities ---
+
+/** Parses the command string from native host payload */
+function parseCommandString(payload: string): { command: string | null, args: string | undefined, url: string | undefined } {
+    const parts = payload.trim().split(/\s+/); // Split by whitespace
+    const command = parts.shift() || null; // First part is the command
+    let args: string | undefined = undefined;
+    let url: string | undefined = undefined;
+
+    if (parts.length > 0) {
+        args = parts.join(' '); // Rejoin remaining parts as arguments string
+        // Special handling for create_tab to extract URL
+        if (command === 'create_tab') {
+            // Basic check if the first argument looks like a URL
+            if (parts[0].match(/^(https?|file|ftp):\/\//i) || parts[0].startsWith('about:')) {
+                url = parts[0];
+            } else {
+                log(`[Background:parseCommandString] Warning: 'create_tab' command received, but argument '${parts[0]}' doesn't look like a standard URL.`);
+                // Attempt to use it anyway, handler might validate further
+                url = parts[0];
+            }
+        }
+    }
+    log(`[Background:parseCommandString] Parsed: command=${command}, args=${args}, url=${url}`);
+    return { command, args, url };
+}
 
 /** Sends status updates to the popup, carefully constructing the payload */
 function sendPopupUpdate(connected: boolean, status: string, currentComponents?: ComponentStatus, currentPort?: number): void {

@@ -103,7 +103,7 @@ messageEmitter.on('message', (messagePayload: { source: string, data: any }) => 
     }
 
     // Send to connected SSE clients (using the function from api-server)
-    sendSseEvent('message', { source: messagePayload.source, data: messagePayload.data });
+    sendSseEvent({ type: 'message', source: messagePayload.source, data: messagePayload.data });
 
     // Other broadcasting (MCP, IPC) if needed would be handled similarly or via direct responses.
 });

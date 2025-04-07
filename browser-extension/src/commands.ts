@@ -11,15 +11,15 @@ interface ConsoleLogEntry {
 }
 
 // Define the structure for command handlers
-// They receive arguments parsed by background.ts
-type CommandHandler = (args: CommandMessage, nativePort: browser.runtime.Port | null) => Promise<any>;
+// They receive arguments parsed by background.ts AND optionally a requestId
+type CommandHandler = (args: CommandMessage, nativePort: browser.runtime.Port | null, requestId?: string) => Promise<any>;
 
 const commandRegistry = new Map<string, CommandHandler>();
 
 // Function to register commands within the extension
 function registerCommand(commandName: string, handler: CommandHandler) {
     if (commandRegistry.has(commandName)) {
-        logToBuffer(`[Commands] Warning: Command "${commandName}" is already registered. Overwriting.`);
+        logToBuffer(`[Commands] Warning: Command \"${commandName}\" is already registered. Overwriting.`);
     }
     commandRegistry.set(commandName, handler);
     logToBuffer(`[Commands] Command registered: ${commandName}`);
@@ -56,91 +56,104 @@ async function getTargetTabId(): Promise<number> {
     throw new Error('No target tab found (last created or active).');
 }
 
-// --- Command Handlers ---
+// --- Response Helpers ---
 
-// handleGetConsole doesn't use args string, only command name
-async function handleGetConsole(args: CommandMessage, nativePort: browser.runtime.Port | null) {
-    const commandName = args.command; // e.g., "get_console_logs"
-    const statusKey = commandName.replace('get_', ''); // e.g., "console_logs"
+// Helper to send a structured success response if requestId is present
+function sendSuccessResponse(nativePort: browser.runtime.Port | null, requestId: string | undefined, responsePayload: any) {
+    if (requestId) {
+        nativePort?.postMessage({ type: 'commandResponse', requestId: requestId, response: responsePayload });
+        logToBuffer(`[Commands] Sent commandResponse for ID ${requestId}`);
+    } else {
+        // Fallback to old status messages if no requestId (e.g., from popup)
+        const status = responsePayload.status || 'unknown_success'; // Try to infer status
+        nativePort?.postMessage({ status: status, ...responsePayload });
+        logToBuffer(`[Commands] Sent status message (no requestId): ${status}`);
+    }
+}
+
+// Helper to send a structured error response if requestId is present
+function sendErrorResponse(nativePort: browser.runtime.Port | null, requestId: string | undefined, commandName: string, errorMessage: string) {
+     if (requestId) {
+         nativePort?.postMessage({ type: 'commandError', requestId: requestId, error: errorMessage });
+         logToBuffer(`[Commands] Sent commandError for ID ${requestId}: ${errorMessage}`);
+     } else {
+         // Fallback to old error status message
+         nativePort?.postMessage({ status: 'error', command: commandName, message: errorMessage });
+          logToBuffer(`[Commands] Sent error status message (no requestId): ${errorMessage}`);
+     }
+}
+
+// --- Command Handlers (Modified) ---
+
+// handleGetConsole
+async function handleGetConsole(args: CommandMessage, nativePort: browser.runtime.Port | null, requestId?: string) {
+    const commandName = args.command;
+    const statusKey = commandName.replace('get_', '');
     const levelFilter = commandName === 'get_console_warnings' ? 'warn'
                       : commandName === 'get_console_errors' ? 'error'
-                      : commandName === 'get_console_logs' ? ['log', 'info', 'debug'] // Capture standard logs for get_console_logs
-                      : null; // null means get_console_all or unexpected command
+                      : commandName === 'get_console_logs' ? ['log', 'info', 'debug']
+                      : null;
 
-    logToBuffer(`[${commandName}] Received request.`);
+    logToBuffer(`[${commandName}] Received request (ReqID: ${requestId || 'N/A'}).`);
 
     try {
         const targetTabId = await getTargetTabId();
         logToBuffer(`[${commandName}] Requesting logs from content script in tab ${targetTabId}`);
-
         const response = await browser.tabs.sendMessage(targetTabId, { command: 'request_console_logs' });
 
-        // Check for errors after sending message
-        if (browser.runtime.lastError) {
-             throw new Error(`Error communicating with content script: ${browser.runtime.lastError.message}`);
-        }
-        if (!response || !response.success || !response.logs) {
-             throw new Error('Failed to retrieve logs from page content script (invalid response). Check if the page supports content scripts.');
-        }
+        if (browser.runtime.lastError) throw new Error(`Error communicating with content script: ${browser.runtime.lastError.message}`);
+        if (!response || !response.success || !response.logs) throw new Error('Failed to retrieve logs from page content script (invalid response).');
 
         logToBuffer(`[${commandName}] Received ${response.logs.length} logs from content script.`);
         const allLogs: ConsoleLogEntry[] = response.logs;
-        const payload: { [key: string]: any } = {};
+        let resultData: any;
 
          if (commandName === 'get_console_all') {
-             payload.data = {
+             resultData = {
                  logs: allLogs.filter(l => ['log', 'info', 'debug'].includes(l.level)),
                  warnings: allLogs.filter(l => l.level === 'warn'),
                  errors: allLogs.filter(l => l.level === 'error'),
              };
              logToBuffer(`[${commandName}] Prepared data for all log types.`);
          } else if (levelFilter) {
-             const dataKey = statusKey.includes('logs') ? 'logs'
-                           : statusKey.includes('warnings') ? 'warnings'
-                           : statusKey.includes('errors') ? 'errors'
-                           : 'data'; // Fallback key
              const levelsToFilter = Array.isArray(levelFilter) ? levelFilter : [levelFilter];
-             payload[dataKey] = allLogs.filter(log => levelsToFilter.includes(log.level));
-             logToBuffer(`[${commandName}] Filtered to ${payload[dataKey].length} logs (level(s): ${levelsToFilter.join(', ')}).`);
+             resultData = allLogs.filter(log => levelsToFilter.includes(log.level));
+             logToBuffer(`[${commandName}] Filtered to ${resultData.length} logs (level(s): ${levelsToFilter.join(', ')}).`);
          } else {
-             // Should not happen with current commands, but handle defensively
-              logToBuffer(`[${commandName}] No specific filter applied, returning all logs under 'data'.`);
-              payload.data = allLogs;
+              logToBuffer(`[${commandName}] No specific filter applied, returning all logs.`);
+              resultData = allLogs;
          }
 
-         nativePort?.postMessage({ status: statusKey, ...payload });
-         logToBuffer(`[${commandName}] Sent logs back to native host.`);
+         // Use helper to send response
+         sendSuccessResponse(nativePort, requestId, { success: true, status: statusKey, data: resultData }); // Include status for fallback
 
     } catch (err) {
         const errorMessage = err instanceof Error ? err.message : String(err);
         logToBuffer(`[${commandName}] Error: ${errorMessage}`);
-        // Provide more context in the error message back to the native host
         let detailedErrorMessage = `Handler failed: ${errorMessage}`;
         if (errorMessage.includes("Could not establish connection") || errorMessage.includes("No receiving end")) {
-             detailedErrorMessage = `Content script not available/responding on the target page. Ensure the page is loaded and allows content scripts. Original error: ${errorMessage}`;
+             detailedErrorMessage = `Content script not available/responding on the target page. Original error: ${errorMessage}`;
         }
-        nativePort?.postMessage({ status: 'error', command: commandName, message: detailedErrorMessage });
+        // Use helper to send error
+        sendErrorResponse(nativePort, requestId, commandName, detailedErrorMessage);
     }
 }
 
-// handleClearConsole doesn't use args string
-async function handleClearConsole(args: CommandMessage, nativePort: browser.runtime.Port | null) {
-     logToBuffer(`[clear_console] Received request.`);
+// handleClearConsole
+async function handleClearConsole(args: CommandMessage, nativePort: browser.runtime.Port | null, requestId?: string) {
+     logToBuffer(`[clear_console] Received request (ReqID: ${requestId || 'N/A'}).`);
      try {
          const targetTabId = await getTargetTabId();
          logToBuffer(`[clear_console] Requesting clear for tab ${targetTabId}`);
-
          const response = await browser.tabs.sendMessage(targetTabId, { command: 'request_clear_console' });
 
-         if (browser.runtime.lastError) {
-              throw new Error(`Error communicating with content script: ${browser.runtime.lastError.message}`);
-         }
-         if (response && response.success) {
-              logToBuffer("[clear_console] Console cleared successfully via content script. Sending confirmation.");
-              nativePort?.postMessage({ status: 'console_cleared' });
-         } else {
-              throw new Error('Failed to clear console via content script (no success response).');
-         }
+         if (browser.runtime.lastError) throw new Error(`Error communicating with content script: ${browser.runtime.lastError.message}`);
+         if (!response || !response.success) throw new Error('Failed to clear console via content script (no success response).');
+
+         logToBuffer("[clear_console] Console cleared successfully via content script.");
+         // Use helper to send response
+         sendSuccessResponse(nativePort, requestId, { success: true, status: 'console_cleared' }); // Include status for fallback
+
      } catch (err) {
          const errorMessage = err instanceof Error ? err.message : String(err);
          logToBuffer(`[clear_console] Error: ${errorMessage}`);
@@ -148,40 +161,40 @@ async function handleClearConsole(args: CommandMessage, nativePort: browser.runt
          if (errorMessage.includes("Could not establish connection") || errorMessage.includes("No receiving end")) {
               detailedErrorMessage = `Content script not available/responding on the target page. Original error: ${errorMessage}`;
          }
-         nativePort?.postMessage({ status: 'error', command: 'clear_console', message: detailedErrorMessage });
+         // Use helper to send error
+         sendErrorResponse(nativePort, requestId, 'clear_console', detailedErrorMessage);
      }
 }
 
-// handleGetScreenshot doesn't use args string
-async function handleGetScreenshot(args: CommandMessage, nativePort: browser.runtime.Port | null) {
-     logToBuffer(`[get_screenshot] Received request.`);
+// handleGetScreenshot
+async function handleGetScreenshot(args: CommandMessage, nativePort: browser.runtime.Port | null, requestId?: string) {
+     logToBuffer(`[get_screenshot] Received request (ReqID: ${requestId || 'N/A'}).`);
      try {
-         // No need to get targetTabId explicitly, captureVisibleTab captures the currently visible tab in the *current* window
          logToBuffer(`[get_screenshot] Capturing visible tab...`);
-         // format: "png" is default. Pass options directly if windowId is omitted.
          const dataUrl = await browser.tabs.captureVisibleTab({ format: "png" });
-         logToBuffer("[get_screenshot] Sending 'screenshot_data' back to native host.");
-         // Send response with base64 data directly in 'data' field
-         nativePort?.postMessage({ status: 'screenshot_data', data: dataUrl });
+         logToBuffer("[get_screenshot] Captured successfully.");
+         // Use helper to send response
+         sendSuccessResponse(nativePort, requestId, { success: true, status: 'screenshot_data', data: dataUrl }); // Include status and data for fallback
+
      } catch (err) {
          const errorMessage = err instanceof Error ? err.message : String(err);
          logToBuffer(`[get_screenshot] Error: ${errorMessage}`);
-         nativePort?.postMessage({ status: 'error', command: 'get_screenshot', message: `Screenshot failed: ${errorMessage}` });
+         // Use helper to send error
+         sendErrorResponse(nativePort, requestId, 'get_screenshot', `Screenshot failed: ${errorMessage}`);
      }
 }
 
-// handleCreateTab uses the pre-parsed url property set by background.ts
-async function handleCreateTab(args: CommandMessage, nativePort: browser.runtime.Port | null) {
+// handleCreateTab
+async function handleCreateTab(args: CommandMessage, nativePort: browser.runtime.Port | null, requestId?: string) {
      if (!args.url) {
-         const errorMsg = 'Missing or invalid URL parameter (expected url property).';
+         const errorMsg = 'Missing or invalid URL parameter.';
          logToBuffer(`[create_tab] Error: ${errorMsg}`);
-         nativePort?.postMessage({ status: 'error', command: 'create_tab', message: errorMsg });
+         sendErrorResponse(nativePort, requestId, 'create_tab', errorMsg);
          return;
      }
      const targetUrl = args.url;
-     logToBuffer(`[create_tab] Request to create tab: ${targetUrl}`);
+     logToBuffer(`[create_tab] Request to create tab: ${targetUrl} (ReqID: ${requestId || 'N/A'}).`);
      try {
-         // Create tab and make it active
          const newTab = await browser.tabs.create({ url: targetUrl, active: true });
          if (newTab.id !== undefined) {
              setLastCreatedTabId(newTab.id);
@@ -190,20 +203,26 @@ async function handleCreateTab(args: CommandMessage, nativePort: browser.runtime
              logToBuffer(`[create_tab] Warning: New tab created but ID is undefined.`);
          }
          logToBuffer(`[create_tab] Success: tab ${newTab.id} for ${targetUrl}`);
-         nativePort?.postMessage({ status: 'tab_created', command: 'create_tab', tabId: newTab.id, url: targetUrl });
+         // Use helper to send response
+         sendSuccessResponse(nativePort, requestId, { success: true, status: 'tab_created', tabId: newTab.id, url: targetUrl }); // Include status and data for fallback
+
      } catch (err) {
         const errorMessage = err instanceof Error ? err.message : String(err);
          logToBuffer(`[create_tab] Error creating tab for ${targetUrl}: ${errorMessage}`);
-         nativePort?.postMessage({ status: 'error', command: 'create_tab', url: targetUrl, message: `Failed to create tab: ${errorMessage}` });
+         // Use helper to send error
+         sendErrorResponse(nativePort, requestId, 'create_tab', `Failed to create tab: ${errorMessage}`);
      }
 }
 
-// handleReloadExtension doesn't use args string
-async function handleReloadExtension(args: CommandMessage, nativePort: browser.runtime.Port | null) {
-    logToBuffer("[reload_extension] Received command. Reloading extension...");
-    // Optional: Send a confirmation back before reloading?
-    // nativePort?.postMessage({ status: 'reloading_extension' });
-    // await new Promise(resolve => setTimeout(resolve, 100)); // Short delay
+// handleReloadExtension
+async function handleReloadExtension(args: CommandMessage, nativePort: browser.runtime.Port | null, requestId?: string) {
+    logToBuffer(`[reload_extension] Received command (ReqID: ${requestId || 'N/A'}). Reloading extension...`);
+    // If requested via native host, send confirmation FIRST
+    if (requestId) {
+        sendSuccessResponse(nativePort, requestId, { success: true });
+        await new Promise(resolve => setTimeout(resolve, 100)); // Short delay
+    }
+    // If from popup, no response needed before reload
     browser.runtime.reload();
 }
 
@@ -219,22 +238,25 @@ registerCommand('get_screenshot', handleGetScreenshot);
 registerCommand('create_tab', handleCreateTab);
 registerCommand('reload_extension', handleReloadExtension);
 
-// Function to execute commands received from the native host
-// Accepts the refined CommandMessage type
-export async function executeCommand(message: CommandMessage, nativePort: browser.runtime.Port | null) {
+// Function to execute commands received
+// Now accepts optional requestId
+export async function executeCommand(message: CommandMessage, nativePort: browser.runtime.Port | null, requestId?: string) {
     const handler = commandRegistry.get(message.command);
     if (handler) {
-        logToBuffer(`[Commands] Executing command: ${message.command} with args: ${message.args || '<none>'}`);
+        logToBuffer(`[Commands] Executing command: ${message.command} (ReqID: ${requestId || 'N/A'}) with args: ${message.args || '<none>'}`);
         try {
-            await handler(message, nativePort);
+            // Pass requestId to the handler
+            await handler(message, nativePort, requestId);
         } catch (error) {
             const errorMessage = error instanceof Error ? error.message : String(error);
             logToBuffer(`[Commands] Critical error executing handler for ${message.command}: ${errorMessage}`);
-            nativePort?.postMessage({ status: 'error', command: message.command, message: `Critical handler error: ${errorMessage}` });
+            // Use helper to send error, passing requestId
+            sendErrorResponse(nativePort, requestId, message.command, `Critical handler error: ${errorMessage}`);
         }
     } else {
         logToBuffer(`[Commands] Received unknown command: ${message.command}`);
-        nativePort?.postMessage({ status: 'error', command: message.command, message: `Unknown command: ${message.command}` });
+        // Use helper to send error, passing requestId
+        sendErrorResponse(nativePort, requestId, message.command, `Unknown command: ${message.command}`);
     }
 }
 

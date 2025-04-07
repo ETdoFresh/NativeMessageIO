@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as net from 'net';
 import { logStdErr } from './utils/logger.js';
 import { updateComponentStatus } from './state.js';
-import { writeNativeMessage } from './native-messaging.js';
+import { writeNativeMessage, sendCommandAndWaitForResponse } from './native-messaging.js';
 import { PIPE_PATH } from './config.js';
 
 let ipcServerInstance: net.Server | null = null;
@@ -37,7 +37,7 @@ export function startIpcServer(): Promise<net.Server | null> {
 
                 let requestJson: any;
                 let responseMessage: string = '[ERROR] Initial error state'; // Default error
-                let commandSuccessfullyForwarded = false;
+                let commandInteractionSuccessful = false; // Renamed for clarity
 
                 try {
                     requestJson = JSON.parse(receiveBuffer);
@@ -48,18 +48,22 @@ export function startIpcServer(): Promise<net.Server | null> {
                         responseMessage = '[ERROR] Invalid request format. Expected JSON: { "message": "string" }';
                     } else {
                         const commandString: string = requestJson.message;
-                        logStdErr(`Attempting to forward IPC command string: "${commandString.substring(0, 100)}..."`);
-                        
-                        // --- Directly forward the raw command string --- 
+                        logStdErr(`Attempting to interact with extension using command string: "${commandString.substring(0, 100)}..."`);
+
+                        // --- Send command and wait for response from extension ---
                         try {
-                            await writeNativeMessage({ rawCommand: commandString }); // Send simple object
-                            logStdErr(`Forwarded raw command to extension: ${commandString}`);
-                            responseMessage = `[SUCCESS] Command string forwarded to browser extension.`;
-                            commandSuccessfullyForwarded = true;
-                        } catch (forwardError) {
-                            const errorMessage = forwardError instanceof Error ? forwardError.message : String(forwardError);
-                            logStdErr(`Error forwarding raw command "${commandString}" to extension:`, forwardError);
-                            responseMessage = `[ERROR] Failed to forward command to extension: ${errorMessage}`;
+                            // Use the new function that sends and waits for a response
+                            const extensionResponse = await sendCommandAndWaitForResponse(commandString);
+                            logStdErr(`Received response from extension: ${JSON.stringify(extensionResponse)}`);
+                            // Use the actual response from the extension
+                            // Prepending [SUCCESS] for consistency, adjust as needed
+                            responseMessage = `[SUCCESS] ${JSON.stringify(extensionResponse)}`; 
+                            commandInteractionSuccessful = true; 
+                        } catch (interactionError) {
+                            const errorMessage = interactionError instanceof Error ? interactionError.message : String(interactionError);
+                            logStdErr(`Error during interaction with extension for command "${commandString}":`, interactionError);
+                            // Adjust error message
+                            responseMessage = `[ERROR] Failed interaction with extension: ${errorMessage}`;
                         }
                     }
                 } catch (e) {
@@ -75,7 +79,8 @@ export function startIpcServer(): Promise<net.Server | null> {
 
                 // Send response back to IPC client
                 try {
-                    socket.write(JSON.stringify({ message: responseMessage }) + '\n');
+                    // Ensure response is always JSON stringified
+                    socket.write(JSON.stringify({ message: responseMessage }) + '\n'); 
                     logStdErr(`Sent IPC response.`);
                 } catch (writeError) {
                     logStdErr('Error writing response to IPC socket:', writeError);
@@ -102,7 +107,8 @@ export function startIpcServer(): Promise<net.Server | null> {
                 logStdErr(`IPC Pipe ${PIPE_PATH} is already in use. Ensure no other instance is running or cleanup failed.`);
             }
             updateComponentStatus('ipc', `Error: ${err.code || err.message}`);
-            writeNativeMessage({ status: "error", message: `IPC server error: ${err.message} (Code: ${err.code})` }).catch(logStdErr);
+            // Still use writeNativeMessage for status updates if appropriate
+            writeNativeMessage({ status: "error", message: `IPC server error: ${err.message} (Code: ${err.code})` }).catch(logStdErr); 
             ipcServerInstance = null;
             logStdErr("IPC Server failed to start, allowing main startup to proceed.");
             resolve(null);
