@@ -223,8 +223,8 @@ async function handleCreateTab(args: CommandMessage, nativePort: browser.runtime
              logToBuffer(`[create_tab] Warning: New tab created but ID is undefined.`);
          }
          logToBuffer(`[create_tab] Success: tab ${newTab.id} for ${targetUrl}`);
-         // Pass relevant tab info
-         sendSuccessResponse(nativePort, requestId, { tabId: newTab.id, url: targetUrl }); 
+         // Pass only the tab ID
+         sendSuccessResponse(nativePort, requestId, newTab.id);
 
      } catch (err) {
         const errorMessage = err instanceof Error ? err.message : String(err);
@@ -245,6 +245,23 @@ async function handleReloadExtension(args: CommandMessage, nativePort: browser.r
     browser.runtime.reload();
 }
 
+// handleHelp command
+async function handleHelp(args: CommandMessage, nativePort: browser.runtime.Port | null, requestId?: string) {
+    logToBuffer(`[help] Received request (ReqID: ${requestId || 'N/A'}).`);
+    try {
+        const availableCommands = Array.from(commandRegistry.keys());
+        const helpString = availableCommands.join('\n');
+        logToBuffer(`[help] Sending list of available commands.`);
+        // Pass the newline-separated string of command names
+        sendSuccessResponse(nativePort, requestId, helpString); 
+    } catch (err) {
+        const errorMessage = err instanceof Error ? err.message : String(err);
+        logToBuffer(`[help] Error: ${errorMessage}`);
+        // Use helper to send error
+        sendErrorResponse(nativePort, requestId, 'help', `Failed to get command list: ${errorMessage}`);
+    }
+}
+
 // TODO: Add handlers for get_network_errors, get_selected_element if needed
 
 // Register the handlers
@@ -256,6 +273,7 @@ registerCommand('clear_console', handleClearConsole);
 registerCommand('get_screenshot', handleGetScreenshot);
 registerCommand('create_tab', handleCreateTab);
 registerCommand('reload_extension', handleReloadExtension);
+registerCommand('help', handleHelp);
 
 // Function to execute commands received
 // Now accepts optional requestId
