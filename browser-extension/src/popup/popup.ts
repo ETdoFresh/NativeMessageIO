@@ -1,135 +1,155 @@
-// Removed import for browser-polyfill.js as it should be globally available
-
+/**
+ * Popup Script for Native Message IO Extension
+ * Handles UI interactions, settings, and communication with the background script.
+ */
 console.log("[Popup] Script top level - waiting for DOMContentLoaded.");
 
-// --- Interfaces ---
+// --- Type Definitions (Consider sharing with background/commands if complex) ---
+interface Settings {
+    apiPort?: number | ''; // Allow empty string for default
+    ipcPipeName?: string; // Read-only for now
+    mcpPort?: number | ''; // For potential future TCP/UDP MCP
+}
+
+// Matches the structure sent from background script
 interface ComponentStatus {
-    http?: string; // e.g., 'OK', 'Error: ...', 'pending'
+    http?: string;
     ipc?: string;
     mcp?: string;
+    nativeMessaging?: string; // Added as native host sends this
 }
 
-interface PopupMessagePayload {
-    isConnected?: boolean;
-    statusText?: string;
+interface StatusPayload {
+    isConnected: boolean;
+    statusText: string;
     components?: ComponentStatus;
     httpPort?: number | string | null;
-    status?: string; // For 'ready' message from native
-    error?: string; // For error messages
 }
 
-interface BackgroundMessage {
-    command?: 'toggle' | 'getStatus';
-    type?: 'NATIVE_DISCONNECTED' | 'NATIVE_CONNECT_ERROR' | 'FROM_NATIVE' | 'NATIVE_STATUS_UPDATE';
-    payload?: PopupMessagePayload;
-    error?: string; // Used directly in NATIVE_CONNECT_ERROR
-}
-
-interface Settings {
-    apiPort?: number | ''; // Allow empty string to represent 'use default'
-    mcpSsePort?: number | '';
-}
-
-
-// --- DOM Element Variables ---
-let statusDiv: HTMLDivElement | null;
-let toggleButton: HTMLButtonElement | null;
-let iconImage: HTMLImageElement | null;
-let errorMessageDiv: HTMLDivElement | null;
-let componentStatusContainer: HTMLDivElement | null;
-let httpStatusDiv: HTMLDivElement | null;
-let ipcStatusDiv: HTMLDivElement | null;
-let mcpStatusDiv: HTMLDivElement | null;
-let connectedBanner: HTMLDivElement | null;
-let httpPortDisplay: HTMLSpanElement | null; // Assuming it's a span
-let settingsButton: HTMLButtonElement | null;
-let settingsPanel: HTMLDivElement | null;
-let apiPortInput: HTMLInputElement | null;
-let apiPortDisplayLocked: HTMLSpanElement | null; // Assuming it's a span
-let ipcPipeSettingSpan: HTMLSpanElement | null; // Assuming it's a span
-let mcpPortInput: HTMLInputElement | null;
-let mcpPortDisplayLocked: HTMLSpanElement | null; // Assuming it's a span
-let saveSettingsButton: HTMLButtonElement | null;
-let closeSettingsButton: HTMLButtonElement | null;
-let mainPopupContent: HTMLDivElement | null; // Assuming it's a div
-
-// Hardcoded IPC Pipe Name (matches native host)
-// const IPC_PIPE_NAME = process.platform === 'win32' ? '\\\\.\\pipe\\native-message-io-ipc-pipe' : '/tmp/native-message-io-ipc-pipe.sock'; // REMOVED: process is not defined in browser
-const IPC_PIPE_DISPLAY_NAME = "native-message-io-ipc-pipe"; // Fixed display name
-
-// Default Ports (used when connected but actual value missing)
+// --- Constants ---
 const DEFAULT_API_PORT = 3580;
-// const DEFAULT_MCP_PORT = 3581; // Example if needed
+const DEFAULT_IPC_PIPE_NAME = 'native-message-io-ipc-pipe'; // Default pipe name
+
+// --- Global Variables & UI Element References ---
+let statusDiv: HTMLDivElement | null = null;
+let toggleButton: HTMLButtonElement | null = null;
+let iconImage: HTMLImageElement | null = null;
+let errorMessageDiv: HTMLDivElement | null = null;
+let componentStatusContainer: HTMLDivElement | null = null;
+let httpStatusDiv: HTMLDivElement | null = null;
+let ipcStatusDiv: HTMLDivElement | null = null;
+let mcpStatusDiv: HTMLDivElement | null = null;
+let connectedBanner: HTMLDivElement | null = null;
+let httpPortDisplay: HTMLSpanElement | null = null;
+let mainPopupContent: HTMLDivElement | null = null;
+
+// Settings Panel Elements
+let settingsButton: HTMLButtonElement | null = null;
+let settingsPanel: HTMLDivElement | null = null;
+let apiPortInput: HTMLInputElement | null = null;
+let apiPortDisplayLocked: HTMLSpanElement | null = null;
+let ipcPipeSettingSpan: HTMLSpanElement | null = null;
+let mcpPortInput: HTMLInputElement | null = null;
+let mcpPortDisplayLocked: HTMLSpanElement | null = null;
+let saveSettingsButton: HTMLButtonElement | null = null;
+let closeSettingsButton: HTMLButtonElement | null = null;
+
+
+// --- Initialization and Event Listeners ---
 
 document.addEventListener('DOMContentLoaded', () => {
-    console.log("[Popup] DOMContentLoaded event fired.");
-    statusDiv = document.getElementById('statusText') as HTMLDivElement | null;
-    toggleButton = document.getElementById('toggleButton') as HTMLButtonElement | null;
-    iconImage = document.getElementById('iconImage') as HTMLImageElement | null;
-    errorMessageDiv = document.getElementById('errorMessage') as HTMLDivElement | null;
-    componentStatusContainer = document.getElementById('componentStatusContainer') as HTMLDivElement | null;
-    httpStatusDiv = document.getElementById('httpStatus') as HTMLDivElement | null;
-    ipcStatusDiv = document.getElementById('ipcStatus') as HTMLDivElement | null;
-    mcpStatusDiv = document.getElementById('mcpStatus') as HTMLDivElement | null;
-    connectedBanner = document.getElementById('connectedBanner') as HTMLDivElement | null;
-    httpPortDisplay = document.getElementById('httpPortDisplay') as HTMLSpanElement | null;
-    settingsButton = document.getElementById('settingsButton') as HTMLButtonElement | null;
-    settingsPanel = document.getElementById('settingsPanel') as HTMLDivElement | null;
-    apiPortInput = document.getElementById('apiPortInput') as HTMLInputElement | null;
-    apiPortDisplayLocked = document.getElementById('apiPortDisplayLocked') as HTMLSpanElement | null;
-    ipcPipeSettingSpan = document.getElementById('ipcPipeSetting') as HTMLSpanElement | null;
-    mcpPortInput = document.getElementById('mcpPortInput') as HTMLInputElement | null;
-    mcpPortDisplayLocked = document.getElementById('mcpPortDisplayLocked') as HTMLSpanElement | null;
-    saveSettingsButton = document.getElementById('saveSettingsButton') as HTMLButtonElement | null;
-    closeSettingsButton = document.getElementById('closeSettingsButton') as HTMLButtonElement | null;
-    mainPopupContent = document.querySelector('.popup-container') as HTMLDivElement | null;
+    console.log('[Popup] DOMContentLoaded event fired.');
 
-    console.log(`[Popup] Elements acquired: statusDiv=${!!statusDiv}, toggleButton=${!!toggleButton}, componentStatusContainer=${!!componentStatusContainer}, httpPortDisplay=${!!httpPortDisplay}`);
-    console.log(`[Popup] Settings elements acquired: settingsButton=${!!settingsButton}, settingsPanel=${!!settingsPanel}, apiPortInput=${!!apiPortInput}, apiPortDisplayLocked=${!!apiPortDisplayLocked}, ipcPipeSettingSpan=${!!ipcPipeSettingSpan}, mcpPortInput=${!!mcpPortInput}, mcpPortDisplayLocked=${!!mcpPortDisplayLocked}`);
-    console.log(`[Popup] Main content element acquired: ${!!mainPopupContent}`);
+    // Acquire references to UI elements - Using IDs from popup.html
+    statusDiv = document.getElementById('statusText') as HTMLDivElement;
+    toggleButton = document.getElementById('toggleButton') as HTMLButtonElement;
+    iconImage = document.getElementById('iconImage') as HTMLImageElement;
+    errorMessageDiv = document.getElementById('errorMessage') as HTMLDivElement;
+    componentStatusContainer = document.getElementById('componentStatusContainer') as HTMLDivElement;
+    httpStatusDiv = document.getElementById('httpStatus') as HTMLDivElement;
+    ipcStatusDiv = document.getElementById('ipcStatus') as HTMLDivElement;
+    mcpStatusDiv = document.getElementById('mcpStatus') as HTMLDivElement;
+    connectedBanner = document.getElementById('connectedBanner') as HTMLDivElement;
+    httpPortDisplay = document.getElementById('httpPortDisplay') as HTMLSpanElement;
+    mainPopupContent = document.getElementById('mainContent') as HTMLDivElement;
 
-    if (toggleButton && statusDiv && iconImage && errorMessageDiv && componentStatusContainer && httpStatusDiv && ipcStatusDiv && mcpStatusDiv && connectedBanner && httpPortDisplay && settingsButton && settingsPanel && apiPortInput && apiPortDisplayLocked && ipcPipeSettingSpan && mcpPortInput && mcpPortDisplayLocked && saveSettingsButton && closeSettingsButton && mainPopupContent) {
-        // updateUI(false, 'Checking...'); // REMOVED: Avoid initial incorrect state flash
-        toggleButton.addEventListener('click', handleToggleButtonClick);
-        console.log("[Popup] Added toggle button listener.");
-        settingsButton.addEventListener('click', openSettingsPanel);
-        saveSettingsButton.addEventListener('click', saveSettings);
-        closeSettingsButton.addEventListener('click', closeSettingsPanel);
-        console.log("[Popup] Added settings listeners.");
+    // Acquire Settings elements - Using IDs from popup.html
+    settingsButton = document.getElementById('settingsButton') as HTMLButtonElement;
+    settingsPanel = document.getElementById('settingsPanel') as HTMLDivElement;
+    apiPortInput = document.getElementById('apiPortInput') as HTMLInputElement;
+    apiPortDisplayLocked = document.getElementById('apiPortDisplayLocked') as HTMLSpanElement;
+    ipcPipeSettingSpan = document.getElementById('ipcPipeSetting') as HTMLSpanElement;
+    mcpPortInput = document.getElementById('mcpPortInput') as HTMLInputElement;
+    mcpPortDisplayLocked = document.getElementById('mcpPortDisplayLocked') as HTMLSpanElement;
+    saveSettingsButton = document.getElementById('saveSettingsButton') as HTMLButtonElement;
+    closeSettingsButton = document.getElementById('closeSettingsButton') as HTMLButtonElement;
+
+
+    console.log(`[Popup] Elements acquired: statusDiv=${!!statusDiv}, toggleButton=${!!toggleButton}, iconImage=${!!iconImage}, errorMessageDiv=${!!errorMessageDiv}, componentStatusContainer=${!!componentStatusContainer}, httpPortDisplay=${!!httpPortDisplay}, mainPopupContent=${!!mainPopupContent}`);
+    console.log(`[Popup] Settings elements acquired: settingsButton=${!!settingsButton}, settingsPanel=${!!settingsPanel}, apiPortInput=${!!apiPortInput}, apiPortDisplayLocked=${!!apiPortDisplayLocked}, ipcPipeSettingSpan=${!!ipcPipeSettingSpan}, mcpPortInput=${!!mcpPortInput}, mcpPortDisplayLocked=${!!mcpPortDisplayLocked}, saveSettingsButton=${!!saveSettingsButton}, closeSettingsButton=${!!closeSettingsButton}`);
+
+    // Add listener for the main toggle button
+    if (toggleButton) {
+        toggleButton.addEventListener('click', handleToggleClick);
+        console.log('[Popup] Added toggle button listener.');
     } else {
-        console.error("[Popup] FATAL: Could not find essential UI, Settings, or Main Content elements after DOMContentLoaded!");
-        if(document.body) document.body.textContent = "Error: Popup UI elements missing.";
-        return;
+        console.error('[Popup] Toggle button not found!');
     }
+
+    // Add listeners for settings interactions
+    if (settingsButton && settingsPanel && saveSettingsButton && closeSettingsButton && apiPortInput && mcpPortInput) {
+        settingsButton.addEventListener('click', toggleSettingsPanel);
+        saveSettingsButton.addEventListener('click', saveSettings);
+        closeSettingsButton.addEventListener('click', () => settingsPanel!.style.display = 'none'); // Use body class instead?
+        console.log('[Popup] Added settings listeners.');
+    } else {
+        console.error('[Popup] Settings UI elements missing!');
+    } 
+
+    // Initial UI state before getting status
+    updateUI(false, "Status: Checking...");
+
+    // Get initial status from background script
+    console.log('[Popup] DOM Ready. Calling getInitialStatus()...');
     getInitialStatus();
-    console.log("[Popup] DOM Ready. Calling getInitialStatus()...");
 });
+
+
+// --- UI Update Function (Restored) ---
 
 /** Updates the UI elements based on connection status and component details */
 function updateUI(isConnected: boolean, status: string, components?: ComponentStatus, httpPort?: number | string | null): void {
     console.log(`[Popup:updateUI] Called with isConnected=${isConnected}, status=${status}, components=`, components, `, httpPort=${httpPort}`);
-    if (!toggleButton || !statusDiv || !iconImage || !errorMessageDiv || !componentStatusContainer || !httpStatusDiv || !ipcStatusDiv || !mcpStatusDiv || !connectedBanner || !httpPortDisplay || !settingsButton || !settingsPanel || !apiPortInput || !apiPortDisplayLocked || !ipcPipeSettingSpan || !mcpPortInput || !mcpPortDisplayLocked || !saveSettingsButton || !closeSettingsButton || !mainPopupContent) {
-        console.error("[Popup:updateUI] Missing UI elements.");
+
+    // Ensure all potentially used elements are checked
+    if (!toggleButton || !statusDiv || !iconImage || !errorMessageDiv || !componentStatusContainer || !httpStatusDiv || !ipcStatusDiv || !mcpStatusDiv || !connectedBanner || !httpPortDisplay || !mainPopupContent) {
+        console.error("[Popup:updateUI] Missing one or more required UI elements for update.");
         return;
     }
 
     // --- Reset states ---
-    toggleButton.disabled = false;
     errorMessageDiv.textContent = '';
+    errorMessageDiv.style.display = 'none';
     statusDiv.textContent = status;
     statusDiv.className = 'status-text'; // Reset classes
+    statusDiv.style.display = 'block'; // Default to visible
     toggleButton.className = 'button'; // Reset classes
+    toggleButton.disabled = false;
     componentStatusContainer.classList.add('status-hidden');
     componentStatusContainer.classList.remove('status-visible');
     connectedBanner.classList.add('status-hidden');
     connectedBanner.classList.remove('status-visible');
-    updateComponentStatusDiv(httpStatusDiv);
-    updateComponentStatusDiv(ipcStatusDiv);
-    updateComponentStatusDiv(mcpStatusDiv);
+    updateComponentStatusDiv(httpStatusDiv); // Reset style
+    updateComponentStatusDiv(ipcStatusDiv); // Reset style
+    updateComponentStatusDiv(mcpStatusDiv); // Reset style
     httpPortDisplay.textContent = '';
+    document.body.classList.remove('connected', 'disconnected'); // Reset body classes
+    mainPopupContent.style.display = 'block'; // Default to visible
 
     // --- Apply new states ---
     if (isConnected) {
+        console.log("[Popup:updateUI] Setting state to Connected.");
+        document.body.classList.add('connected');
         statusDiv.style.display = 'none'; // Hide general status text when connected
         connectedBanner.classList.remove('status-hidden');
         connectedBanner.classList.add('status-visible');
@@ -138,317 +158,332 @@ function updateUI(isConnected: boolean, status: string, components?: ComponentSt
         toggleButton.textContent = 'Disconnect';
         toggleButton.classList.add('status-red'); // Disconnect is red
         iconImage.src = '/icons/native-host-control-connected-128.png';
-        console.log("[Popup:updateUI] Setting state to Connected.");
 
         // Update component status indicators
         updateComponentStatusDiv(httpStatusDiv, components?.http);
         updateComponentStatusDiv(ipcStatusDiv, components?.ipc);
         updateComponentStatusDiv(mcpStatusDiv, components?.mcp);
 
+        // Update HTTP Port display
         if (httpPort) {
             httpPortDisplay.textContent = `:${httpPort}`;
         } else if (components?.http === 'OK') {
-            // If connected and HTTP is OK but port wasn't provided, maybe show default?
-            httpPortDisplay.textContent = `:${DEFAULT_API_PORT}`; // Consider adding default if connected and OK
+             // If connected and HTTP is OK but port wasn't provided, maybe show default?
+             httpPortDisplay.textContent = `:${DEFAULT_API_PORT}`; // Consider adding default if connected and OK
         }
+
     } else {
-        statusDiv.style.display = 'block'; // Show general status text when disconnected
-        connectedBanner.classList.add('status-hidden');
-        connectedBanner.classList.remove('status-visible');
-        componentStatusContainer.classList.add('status-hidden');
-        componentStatusContainer.classList.remove('status-visible');
+        // --- Disconnected/Error State ---
+        console.log(`[Popup:updateUI] Setting state to Disconnected/Error (${status}).`);
+        document.body.classList.add('disconnected');
         iconImage.src = '/icons/native-host-control-128.png';
 
-        // Handle status text potentially having "Status: " prefix
+        // Handle status text potentially having "Status: " prefix or being an error message
         const cleanStatus = status.startsWith('Status: ') ? status.substring(8) : status;
 
-        if (cleanStatus === 'Disconnected') { // Check against cleaned status
-            statusDiv.textContent = 'Disconnected';
+        if (cleanStatus === 'Disconnected' || cleanStatus === 'Checking...') {
+            statusDiv.textContent = cleanStatus;
             statusDiv.classList.add('status-grey');
             toggleButton.textContent = 'Connect';
             toggleButton.classList.add('status-green'); // Connect is green
-        } else if (cleanStatus === 'Connecting...' || cleanStatus === 'Checking...' || cleanStatus === 'Disconnecting...') {
+        } else if (cleanStatus === 'Connecting...' || cleanStatus === 'Disconnecting...') {
             statusDiv.textContent = cleanStatus;
             statusDiv.classList.add('status-yellow');
             toggleButton.textContent = cleanStatus; // Show status in button
             toggleButton.classList.add('status-yellow');
             toggleButton.disabled = true;
         } else { // Error states
-            statusDiv.textContent = 'Error';
+            statusDiv.textContent = 'Error'; // Simple label
             statusDiv.classList.add('status-red');
+            errorMessageDiv.textContent = status; // Show full error message
+            errorMessageDiv.style.display = 'block';
             toggleButton.textContent = 'Connect'; // Allow retry
             toggleButton.classList.add('status-green');
-            if(status) errorMessageDiv.textContent = status; // Show original full status text in error message
         }
-        if (ipcPipeSettingSpan) ipcPipeSettingSpan.textContent = 'N/A';
-        httpPortDisplay.textContent = '';
-        console.log(`[Popup:updateUI] Setting state to Disconnected/Error (${status}).`);
     }
 }
 
 /** Helper to update a single component status div */
 function updateComponentStatusDiv(div: HTMLDivElement | null, status?: string): void {
     if (!div) return;
-    const checkSpan = div.querySelector<HTMLSpanElement>('.status-check'); // Use querySelector<T>
+    const checkSpan = div.querySelector<HTMLSpanElement>('.status-check');
     if (!checkSpan) return;
 
     // Reset classes and checkmark
     div.className = 'component-status'; // Base class
     checkSpan.textContent = ''; // Clear checkmark
+    div.title = ''; // Clear tooltip
 
-    if (status === undefined || status === 'pending') {
+    if (status === undefined || status === 'pending' || !status) {
         div.classList.add('status-grey');
-    } else if (status === 'OK') {
+    } else if (status === 'OK' || status === 'listening') {
         div.classList.add('status-green');
         checkSpan.textContent = ' ✔️'; // Add checkmark for OK status
-    } else if (status.startsWith('Error:')) {
+    } else if (status.toLowerCase().includes('error')) {
         div.title = status; // Show full error on hover
         div.classList.add('status-red');
         checkSpan.textContent = ' ❌'; // Add an 'x' for errors
     } else {
-        // Should not happen based on expected statuses, but handle defensively
+        // Unknown status - treat as pending/grey
         div.classList.add('status-grey');
+        div.title = `Unknown status: ${status}`;
     }
 }
 
-/** Handles clicks on the toggle button */
-function handleToggleButtonClick(): void {
-    console.log("[Popup] Toggle button clicked.");
+// --- Event Handlers ---
+
+/** Handles clicks on the main Connect/Disconnect button */
+function handleToggleClick(): void {
+    console.log('[Popup] Toggle button clicked.');
     if (toggleButton) {
-        // Determine if we are currently trying to connect or disconnect
+        // Determine current state from button text/class
         const isCurrentlyConnected = toggleButton.textContent === 'Disconnect';
-        const nextStateMsg = isCurrentlyConnected ? 'Disconnecting...' : 'Connecting...';
+        const actionText = isCurrentlyConnected ? 'Status: Disconnecting...' : 'Status: Connecting...';
 
-        toggleButton.disabled = true; // Prevent double-clicks while processing
-        updateUI(false, nextStateMsg); // Show specific intermediate state (Connecting... or Disconnecting...)
+        // Immediately update UI to show connecting/disconnecting state
+        updateUI(false, actionText); // Update state visually (show as disconnected + status)
 
-        console.log("[Popup] Sending toggle command...");
-        browser.runtime.sendMessage({ command: "toggle" } as BackgroundMessage)
-            .then((response: unknown) => {
-                const typedResponse = response as PopupMessagePayload | undefined;
-                console.log("[Popup] Toggle command processed by background. Waiting for status update message...", typedResponse);
-                // No UI update needed here; wait for NATIVE_STATUS_UPDATE or error message
+        // Send command to background script
+        console.log('[Popup] Sending toggle command...');
+        browser.runtime.sendMessage({ command: 'toggle' })
+            .then(response => {
+                console.log('[Popup] Toggle command processed by background. Waiting for status update message...', response);
+                // Background script should send a NATIVE_STATUS_UPDATE message soon
             })
-            .catch((error: Error) => {
-                const errMsg = `Toggle Error: ${error.message}`;
-                console.error("[Popup] Error sending toggle message:", error);
-                // Show error and allow retry
-                updateUI(false, errMsg);
-                if (toggleButton) toggleButton.disabled = false; // Re-enable button ONLY on error
+            .catch(err => {
+                console.error('[Popup] Error sending toggle command:', err);
+                updateUI(false, `Error: ${err.message}`);
             });
     }
 }
 
-/** Sends getStatus command to background script */
+/** Gets initial connection status from background script */
 function getInitialStatus(): void {
-    console.log("[Popup:getInitialStatus] Entered.");
-    console.log("[Popup:getInitialStatus] Sending getStatus command immediately...");
-    browser.runtime.sendMessage({ command: "getStatus" } as BackgroundMessage)
-        .then((response: unknown) => {
-            const typedResponse = response as PopupMessagePayload;
-            console.log("[Popup:getInitialStatus] Received response: ", typedResponse);
-            // Use the full response from background script
-            updateUI(
-                typedResponse.isConnected ?? false,
-                typedResponse.statusText ?? 'Error: No status',
-                typedResponse.components,
-                typedResponse.httpPort
-            );
+    console.log('[Popup:getInitialStatus] Entered.');
+    console.log('[Popup:getInitialStatus] Sending getStatus command immediately...');
+    browser.runtime.sendMessage({ command: 'getStatus' })
+        .then((response: StatusPayload) => { // Expect the full payload now
+             console.log('[Popup:getInitialStatus] Received response: ', response);
+             if (response && typeof response.isConnected === 'boolean' && typeof response.statusText === 'string') {
+                 // Pass all parts of the payload to the restored updateUI
+                 updateUI(response.isConnected, response.statusText, response.components, response.httpPort);
+             } else {
+                 console.warn("[Popup:getInitialStatus] Received unexpected response format:", response);
+                 updateUI(false, "Status: Error getting initial state"); // Fallback UI state
+             }
         })
-        .catch((error: Error) => {
-            const errMsg = `Get Status Error: ${error.message}`;
-            console.error("[Popup:getInitialStatus] Error getting initial status:", error);
-            updateUI(false, errMsg); // Show error if status fetch fails
+        .catch(err => {
+            console.error('[Popup:getInitialStatus] Error getting status:', err);
+            updateUI(false, `Status: Error (${err.message})`); // Update UI to show error
         });
 }
 
-// Listen for messages FROM background script
-console.log("[Popup] Adding runtime.onMessage listener.");
-browser.runtime.onMessage.addListener((message: unknown /* sender: browser.runtime.MessageSender */): void => {
-    const typedMessage = message as BackgroundMessage;
-    console.log("[Popup:onMessage] Received message: ", typedMessage);
-    // Extract payload data if available
-    const payload = typedMessage.payload;
-    const isConnected = payload?.isConnected;
-    const statusText = payload?.statusText;
-    const components = payload?.components;
-    const httpPort = payload?.httpPort;
+// --- Runtime Message Listener ---
 
-    if (typedMessage.type === "NATIVE_DISCONNECTED") {
-        console.log("[Popup:onMessage] Handling disconnect message.");
-        updateUI(false, 'Disconnected', components); // Pass components if available
-    } else if (typedMessage.type === "NATIVE_CONNECT_ERROR") {
-        console.log("[Popup:onMessage] Handling connect error message.");
-        const errMsg = `Connect Error: ${typedMessage.error || statusText || 'Unknown'}`;
-        updateUI(false, errMsg, components); // Pass components if available
-    } else if (typedMessage.type === "FROM_NATIVE" && payload?.status === 'ready') {
-        // This case might be redundant now if background.ts sends NATIVE_STATUS_UPDATE on ready
-        console.log("[Popup:onMessage] Received forwarded 'ready' message. Updating UI.");
-        updateUI(true, 'Connected', components, httpPort);
-    } else if (typedMessage.type === "NATIVE_STATUS_UPDATE") {
-        console.log("[Popup:onMessage] Received status update. Updating UI.");
-        // Use the extracted values, which might include components and httpPort
-        updateUI(
-            isConnected ?? false, // Default to false if undefined
-            isConnected ? 'Connected' : (statusText ?? 'Disconnected'), // Provide default statusText if disconnected
-            components,
-            httpPort
-        );
+console.log('[Popup] Adding runtime.onMessage listener.');
+
+/** Handles messages received from the background script */
+function handleRuntimeMessage(message: any, sender: browser.runtime.MessageSender): void | Promise<any> {
+    console.log('[Popup:onMessage] Received message: ', message);
+
+    if (!message || !message.type) {
+        console.warn("[Popup:onMessage] Received message without type:", message);
+        return;
     }
-});
-console.log("[Popup] Added runtime.onMessage listener.");
+
+    switch (message.type) {
+        case 'NATIVE_STATUS_UPDATE': {
+            console.log('[Popup:onMessage] Received status update. Updating UI.');
+            const payload = message.payload as StatusPayload;
+            if (payload && typeof payload.isConnected === 'boolean' && typeof payload.statusText === 'string') {
+                // Pass the full payload to the restored updateUI
+                updateUI(payload.isConnected, payload.statusText, payload.components, payload.httpPort);
+            } else {
+                 console.warn("[Popup:onMessage] Received NATIVE_STATUS_UPDATE with invalid payload:", message.payload);
+                 updateUI(false, "Status: Error (Invalid Update)");
+            }
+            break;
+        }
+        case 'LOG_UPDATE':
+            // console.log("POPUP LOG:", message.payload);
+            break;
+        case 'NATIVE_ERROR':
+             console.log(`[Popup:onMessage] Received native error: ${JSON.stringify(message.payload)}`);
+             const errorPayload = message.payload || {};
+             const errorMessage = `Error: ${errorPayload.message || 'Unknown Error'}` + (errorPayload.command ? ` (Cmd: ${errorPayload.command})` : '');
+             // Display the error using updateUI for consistency
+             updateUI(false, errorMessage, undefined, undefined); // Show as disconnected with the error message
+             break;
+        case 'CONSOLE_RESULT': // Renamed from NATIVE_DATA for clarity
+        case 'NATIVE_DATA': // Keep handling NATIVE_DATA for other simple statuses
+             console.log(`[Popup:onMessage] Received data/result: ${JSON.stringify(message.payload)}`);
+             // Display simple feedback in the status div for now
+             if (statusDiv && message.payload?.status) {
+                  statusDiv.textContent = `Status: ${message.payload.status}`; // Show transient status
+                  statusDiv.classList.remove('error');
+             } else {
+                 console.warn("[Popup:onMessage] Received CONSOLE_RESULT/NATIVE_DATA without payload.status", message);
+             }
+             break;
+        default:
+            console.log(`[Popup:onMessage] Received unknown message type: ${message.type}`);
+            break;
+    }
+}
+
+browser.runtime.onMessage.addListener(handleRuntimeMessage);
+console.log('[Popup] Added runtime.onMessage listener.');
+
 
 // --- Settings Panel Logic ---
 
-function openSettingsPanel(): void {
-    console.log("[Popup] openSettingsPanel: Attempting to open...");
-    if (!settingsPanel || !apiPortInput || !apiPortDisplayLocked || !ipcPipeSettingSpan || !mcpPortInput || !mcpPortDisplayLocked || !mainPopupContent || !connectedBanner || !saveSettingsButton || !httpPortDisplay) {
-        console.error("[Popup] openSettingsPanel: Missing required elements.");
-        return;
+/** Toggles the visibility of the settings panel */
+function toggleSettingsPanel(): void {
+    if (!settingsPanel || !mainPopupContent) return;
+    const isVisible = settingsPanel.style.display === 'block';
+    settingsPanel.style.display = isVisible ? 'none' : 'block';
+    mainPopupContent.style.display = isVisible ? 'block' : 'none'; // Hide main content when settings open
+    if (!isVisible) {
+        loadSettings(); // Load current settings when opening
     }
-    console.log("[Popup] openSettingsPanel: Elements found.");
+}
 
-    // Check connection status by looking at the connected banner's visibility
-    const isConnected = connectedBanner.classList.contains('status-visible');
-    console.log(`[Popup] openSettingsPanel: Connection status: ${isConnected}`);
+/** Loads settings from storage and populates the inputs */
+function loadSettings(): void {
+     console.log("[Popup:loadSettings] Loading settings...");
+     // Ensure elements exist before proceeding (needed after async potentially)
+     if (!apiPortInput || !mcpPortInput || !ipcPipeSettingSpan || !apiPortDisplayLocked || !mcpPortDisplayLocked || !saveSettingsButton || !httpPortDisplay) {
+          console.error("[Popup:loadSettings] Settings UI elements not found before loading.");
+          return;
+     }
 
-    // Get the actual current API port from the main display (if connected)
-    const currentActualApiPortText = httpPortDisplay.textContent;
-    const currentActualApiPort = currentActualApiPortText?.startsWith(':') ? currentActualApiPortText.substring(1) : null;
-
-    // Display static IPC pipe name
-    ipcPipeSettingSpan.textContent = IPC_PIPE_DISPLAY_NAME;
-
-    // Load saved ports from storage (we always need these)
-    browser.storage.local.get(['apiPort', 'mcpSsePort'])
+    browser.storage.sync.get(['apiPort', 'ipcPipeName', 'mcpPort'])
         .then((result: Settings) => {
-            const savedApiPort = result.apiPort ?? '';
-            const savedMcpPort = result.mcpSsePort ?? '';
-            console.log(`[Popup] openSettingsPanel: Loaded Saved API Port: ${savedApiPort}, Saved MCP Port: ${savedMcpPort}`);
+            console.log("[Popup:loadSettings] Loaded settings:", result);
 
-            // Ensure elements exist before accessing properties (re-check needed after async operation)
-            if (!apiPortInput || !mcpPortInput || !apiPortDisplayLocked || !mcpPortDisplayLocked || !saveSettingsButton) {
-                 console.error("[Popup] openSettingsPanel: Settings elements became null after storage access.");
-                 return;
+            // Re-check elements used inside .then() for extra safety, although outer check should suffice
+            if (!apiPortInput || !mcpPortInput || !ipcPipeSettingSpan || !apiPortDisplayLocked || !mcpPortDisplayLocked || !saveSettingsButton || !httpPortDisplay) {
+                console.error("[Popup:loadSettings] Settings UI elements became null inside .then()");
+                return;
             }
+
+            // Determine connection status (needed to decide input vs locked display)
+            const isConnected = document.body.classList.contains('connected');
+
+            // Get the actual current API port from the main display (if connected)
+            const currentActualApiPortText = httpPortDisplay.textContent ?? '';
+            const currentActualApiPort = currentActualApiPortText.startsWith(':') ? currentActualApiPortText.substring(1) : null;
+
+            const savedApiPort = result.apiPort ?? '';
+            const savedMcpPort = result.mcpPort ?? '';
+            const ipcPipeName = result.ipcPipeName ?? DEFAULT_IPC_PIPE_NAME;
+
+            ipcPipeSettingSpan.textContent = ipcPipeName;
 
             if (isConnected) {
-                // --- Connected State --- 
-                // Display actual ports (or defaults), hide inputs, show spans
-                apiPortInput.style.display = 'none';
-                mcpPortInput.style.display = 'none';
-                apiPortDisplayLocked.style.display = 'inline';
-                mcpPortDisplayLocked.style.display = 'inline';
+                 // --- Connected State --- 
+                 apiPortInput.style.display = 'none';
+                 mcpPortInput.style.display = 'none';
+                 apiPortDisplayLocked.style.display = 'inline';
+                 mcpPortDisplayLocked.style.display = 'inline';
 
-                apiPortDisplayLocked.textContent = String(currentActualApiPort || DEFAULT_API_PORT);
-                // For MCP, display saved value or 'Not Set' since no actual connected port exists yet
-                mcpPortDisplayLocked.textContent = String(savedMcpPort || '(Not Set)');
+                 apiPortDisplayLocked.textContent = String(currentActualApiPort || DEFAULT_API_PORT);
+                 // MCP port isn't dynamically reported, show saved or default
+                 mcpPortDisplayLocked.textContent = String(savedMcpPort || '(Not Set)');
 
-                saveSettingsButton.disabled = true; // Disable save when connected
-                saveSettingsButton.title = "Disconnect to change settings";
+                 saveSettingsButton.disabled = true;
+                 saveSettingsButton.title = "Disconnect to change settings";
             } else {
-                // --- Disconnected State --- 
-                // Show inputs, hide spans, load saved values into inputs
-                apiPortInput.style.display = 'block';
-                mcpPortInput.style.display = 'block';
-                apiPortDisplayLocked.style.display = 'none';
-                mcpPortDisplayLocked.style.display = 'none';
+                 // --- Disconnected State ---
+                 apiPortInput.style.display = 'block';
+                 mcpPortInput.style.display = 'block';
+                 apiPortDisplayLocked.style.display = 'none';
+                 mcpPortDisplayLocked.style.display = 'none';
 
-                // Use saved API port, fallback placeholder logic
-                apiPortInput.value = String(savedApiPort);
-                if (!apiPortInput.value && currentActualApiPort) {
-                    apiPortInput.placeholder = currentActualApiPort; // Show just the number
-                } else {
-                    apiPortInput.placeholder = String(DEFAULT_API_PORT); // Show just the default number
-                }
+                 apiPortInput.value = String(savedApiPort);
+                 apiPortInput.placeholder = String(DEFAULT_API_PORT);
 
-                // Load saved MCP Port
-                mcpPortInput.value = String(savedMcpPort);
-                mcpPortInput.placeholder = "3581"; // Show just the example number
+                 mcpPortInput.value = String(savedMcpPort);
+                 mcpPortInput.placeholder = "(Optional, e.g., 3581)";
 
-                saveSettingsButton.disabled = false; // Enable save when disconnected
-                saveSettingsButton.title = "";
+                 saveSettingsButton.disabled = false;
+                 saveSettingsButton.title = "";
             }
 
-        }).catch((err: Error) => {
-            // Error loading storage - default to disconnected view
-            console.error("[Popup] openSettingsPanel: Error loading settings from storage:", err);
-             // Ensure elements exist before accessing properties
-             if (!apiPortInput || !mcpPortInput || !apiPortDisplayLocked || !mcpPortDisplayLocked || !saveSettingsButton) {
-                  console.error("[Popup] openSettingsPanel: Settings elements null during storage error handling.");
-                  return;
+        }).catch(err => {
+            console.error("[Popup:loadSettings] Error loading settings:", err);
+            // Fallback to disconnected state display with defaults
+            if (apiPortInput) {
+                 apiPortInput.style.display = 'block';
+                 apiPortInput.value = '';
+                 apiPortInput.placeholder = String(DEFAULT_API_PORT);
+            }
+             if (mcpPortInput) {
+                 mcpPortInput.style.display = 'block';
+                 mcpPortInput.value = '';
+                 mcpPortInput.placeholder = "(Optional, e.g., 3581)";
              }
-            apiPortInput.style.display = 'block';
-            mcpPortInput.style.display = 'block';
-            apiPortDisplayLocked.style.display = 'none';
-            mcpPortDisplayLocked.style.display = 'none';
-            apiPortInput.value = '';
-            apiPortInput.placeholder = String(DEFAULT_API_PORT); // Show just the default number
-            mcpPortInput.value = '';
-            mcpPortInput.placeholder = "3581"; // Show just the example number
-            saveSettingsButton.disabled = false;
-            saveSettingsButton.title = "";
+             if (apiPortDisplayLocked) apiPortDisplayLocked.style.display = 'none';
+             if (mcpPortDisplayLocked) mcpPortDisplayLocked.style.display = 'none';
+             if (ipcPipeSettingSpan) ipcPipeSettingSpan.textContent = DEFAULT_IPC_PIPE_NAME;
+             if (saveSettingsButton) saveSettingsButton.disabled = false;
         });
-
-    // Toggle visibility using body class
-    console.log("[Popup] openSettingsPanel: Adding .settings-active to body.");
-    document.body.classList.add('settings-active');
 }
 
-function closeSettingsPanel(): void {
-    console.log("[Popup] closeSettingsPanel: Attempting to close...");
-    if (!settingsPanel || !mainPopupContent) {
-         console.error("[Popup] closeSettingsPanel: Missing required elements.");
+/** Saves settings from inputs to storage */
+function saveSettings(): void {
+    console.log("[Popup:saveSettings] Attempting to save settings...");
+    // Check elements used in this function
+    if (!apiPortInput || !mcpPortInput || !settingsPanel || !mainPopupContent) {
+         console.error("[Popup:saveSettings] Settings input/panel elements not found.");
+         alert("Error: Could not find settings input fields.");
          return;
     }
-    console.log("[Popup] closeSettingsPanel: Removing .settings-active from body.");
-    document.body.classList.remove('settings-active');
-}
-
-function saveSettings(): void {
-    console.log("[Popup] Saving settings...");
-    if (!apiPortInput || !mcpPortInput) return;
 
     const apiPortValue = apiPortInput.value.trim();
     const mcpPortValue = mcpPortInput.value.trim();
-
     let apiPortNumber: number | '' = '';
     let mcpPortNumber: number | '' = '';
 
     // Validate API Port
     if (apiPortValue !== '') {
-        const parsedApiPort = parseInt(apiPortValue, 10);
-        if (isNaN(parsedApiPort) || parsedApiPort < 1 || parsedApiPort > 65535) {
-            alert('Invalid API Server Port. Please enter a number between 1 and 65535, or leave it blank to use default.');
+        const parsed = parseInt(apiPortValue, 10);
+        if (isNaN(parsed) || parsed < 1 || parsed > 65535) {
+            alert('Invalid API Server Port. Must be 1-65535 or blank for default.');
             return;
         }
-        apiPortNumber = parsedApiPort;
+        apiPortNumber = parsed;
     }
 
     // Validate MCP Port
     if (mcpPortValue !== '') {
-        const parsedMcpPort = parseInt(mcpPortValue, 10);
-        if (isNaN(parsedMcpPort) || parsedMcpPort < 1 || parsedMcpPort > 65535) {
-            alert('Invalid MCP SSE Port. Please enter a number between 1 and 65535, or leave it blank.');
+        const parsed = parseInt(mcpPortValue, 10);
+        if (isNaN(parsed) || parsed < 1 || parsed > 65535) {
+            alert('Invalid MCP SSE Port. Must be 1-65535 or blank.');
             return;
         }
-        mcpPortNumber = parsedMcpPort;
+        mcpPortNumber = parsed;
     }
 
-    const settingsToSave: Settings = {
+    const newSettings: Settings = {
         apiPort: apiPortNumber,
-        mcpSsePort: mcpPortNumber
+        mcpPort: mcpPortNumber
+        // ipcPipeName is not saved here as it's not user-configurable
     };
 
-    // Save the valid port numbers (or empty string if blank)
-    browser.storage.local.set(settingsToSave as Record<string, unknown>)
+     console.log("[Popup:saveSettings] Saving settings:", newSettings);
+    browser.storage.sync.set(newSettings)
         .then(() => {
-            console.log(`[Popup] Saved Settings to storage:`, settingsToSave);
-            // Optionally show a success message
-            closeSettingsPanel(); // Close panel after saving
+            console.log("[Popup:saveSettings] Settings saved successfully.");
+            alert('Settings saved!');
+            // Close panel after saving
+            if (settingsPanel && mainPopupContent) {
+                settingsPanel.style.display = 'none';
+                mainPopupContent.style.display = 'block';
+            }
         })
-        .catch((err: Error) => {
-            console.error("[Popup] Error saving settings to storage:", err);
+        .catch(err => {
+            console.error("[Popup:saveSettings] Error saving settings:", err);
             alert(`Error saving settings: ${err.message}`);
         });
 } 

@@ -3,6 +3,13 @@
 // Use .js extension in import
 import { logToBuffer, getLastCreatedTabId, setLastCreatedTabId } from './shared-state.js';
 
+// Define the structure for log entries used by the content script
+interface ConsoleLogEntry {
+    level: 'log' | 'warn' | 'error' | 'info' | 'debug';
+    message: string;
+    timestamp: number;
+}
+
 // Define the structure for command handlers
 // They receive arguments parsed by background.ts
 type CommandHandler = (args: CommandMessage, nativePort: browser.runtime.Port | null) => Promise<any>;
@@ -77,12 +84,6 @@ async function handleGetConsole(args: CommandMessage, nativePort: browser.runtim
         }
 
         logToBuffer(`[${commandName}] Received ${response.logs.length} logs from content script.`);
-        // Define the expected log structure - reusing the interface from content.ts (ideally share types)
-        interface ConsoleLogEntry {
-            level: string;
-            message: string;
-            timestamp: number;
-        }
         const allLogs: ConsoleLogEntry[] = response.logs;
         const payload: { [key: string]: any } = {};
 
